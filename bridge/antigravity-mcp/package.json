@@ -1,0 +1,23 @@
+{
+  "name": "antigravity-mcp-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP bridge that delegates bounded implementation work to the Antigravity CLI.",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "antigravity-mcp": "index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.1.0",
+    "zod": "^4.6.5"
+  }
+}

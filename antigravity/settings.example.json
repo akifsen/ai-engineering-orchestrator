@@ -1,0 +1,35 @@
+{
+  "agentMode": "accept-edits",
+  "toolPermission": "request-review",
+  "allowNonWorkspaceAccess": false,
+  "trustedWorkspaces": [
+    "C:\\path\\to\\development"
+  ],
+  "permissions": {
+    "allow": [
+      "command(regex:git status.*)",
+      "command(regex:git diff.*)",
+      "command(regex:git log.*)",
+      "command(regex:git show.*)",
+      "command(regex:npm test.*)",
+      "command(regex:npm run test.*)",
+      "command(regex:npm run lint.*)",
+      "command(regex:npm run typecheck.*)",
+      "command(regex:npm run build.*)",
+      "command(regex:node --test.*)"
+    ],
+    "deny": [
+      "command(regex:git push.*)",
+      "command(regex:git reset.*)",
+      "command(regex:git clean.*)",
+      "command(regex:git rebase.*)",
+      "command(regex:git merge.*)",
+      "command(regex:git commit.*)",
+      "command(regex:git checkout.*)",
+      "command(rm -rf)",
+      "command(regex:rm -rf.*)",
+      "command(sudo)",
+      "write_file(.git/)"
+    ]
+  }
+}

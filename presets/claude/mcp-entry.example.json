@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "aeo-antigravity": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "<PROJECT>/.aeo/bridge/antigravity-mcp/index.js"
+      ]
+    }
+  }
+}

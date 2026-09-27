@@ -1,0 +1,41 @@
+# Manual fragment. Merge this block into <project>/.codex/config.toml.
+# Do not replace that file. Do not copy it to ~/.codex/config.toml.
+# Do not add model, reasoning effort, sandbox, approval, notify, or trust settings.
+# Replace <PROJECT> with the target project path, using forward slashes.
+
+# >>> AEO MANAGED CONFIG BEGIN
+# AEO-owned project config. It does not set model, effort, sandbox, approval, or trust.
+
+[mcp_servers.aeo-antigravity]
+command = "node"
+args = ["<PROJECT>/.aeo/bridge/antigravity-mcp/index.js"]
+enabled = true
+enabled_tools = ["delegate_antigravity"]
+startup_timeout_sec = 30
+tool_timeout_sec = 1200
+default_tools_approval_mode = "approve"
+
+[agents.aeo_explorer]
+description = """
+Read-only discovery for AEO.
+"""
+config_file = "<PROJECT>/.codex/agents/aeo-explorer.toml"
+
+[agents.aeo_architect]
+description = """
+Consequential design for AEO. Do not implement the change.
+"""
+config_file = "<PROJECT>/.codex/agents/aeo-architect.toml"
+
+[agents.aeo_reviewer]
+description = """
+Independent review for AEO. Do not approve the work.
+"""
+config_file = "<PROJECT>/.codex/agents/aeo-reviewer.toml"
+
+[agents.aeo_fast_worker]
+description = """
+Truly trivial deterministic edits only.
+"""
+config_file = "<PROJECT>/.codex/agents/aeo-fast-worker.toml"
+# <<< AEO MANAGED CONFIG END
