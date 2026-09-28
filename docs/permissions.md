@@ -8,7 +8,7 @@ Allowing more commands increases how much the engineer can do without you. Enabl
 
 | Surface | Intent |
 | --- | --- |
-| Team Lead | Read git state, run validation, call `delegate_antigravity`. Deny push, reset, clean, rebase, merge, and commit. |
+| Team Lead | Read git state, run validation, call `delegate_antigravity`, `apply_delegation`, and `discard_delegation`. Deny push, reset, clean, rebase, merge, and commit. |
 | Antigravity | Accept file edits in the workspace. Allow read-only git and the project's test or build commands. Deny history changes and `.git` writes. |
 | Bridge | Spawn `agy` without a shell. Do not pass `--dangerously-skip-permissions`. |
 
@@ -16,11 +16,11 @@ The bridge asks Antigravity to run in `accept-edits` mode so headless file edits
 
 ## Files
 
-The installer adds one Claude allow entry, `mcp__aeo-antigravity__delegate_antigravity`, to the project's `.claude/settings.local.json` when that string is missing. It does not replace the permissions object, and it does not copy the lists below. See [installation](install.md).
+The installer adds three Claude allow entries (`mcp__aeo-antigravity__delegate_antigravity`, `mcp__aeo-antigravity__apply_delegation`, and `mcp__aeo-antigravity__discard_delegation`) to the project's `.claude/settings.local.json` when those strings are missing. It does not replace the permissions object, and it does not copy the lists below. See [installation](install.md).
 
-- [AEO permission fragment](../presets/claude/settings-permission.example.json). Merge that one string. The server name is `aeo-antigravity`.
+- [AEO permission fragment](../presets/claude/settings-permission.example.json). Merge those three strings. The server name is `aeo-antigravity`.
 - [Antigravity permissions example](../antigravity/settings.example.json). This is the Antigravity CLI profile, not Claude or Codex config. It is not a file the installer owns. Antigravity authentication remains in your native user settings. The example is merged into `~/.gemini/antigravity-cli/settings.json`. If `~/.gemini/antigravity-cli/settings.json` does not exist, the example can be a starting point after you replace `C:\path\to\development` with the parent directory of the repositories you trust. On macOS or Linux, use a path such as `/path/to/development`. If that settings file already exists, preserve it and merge only the fields you intend to change, such as `agentMode`, `toolPermission`, `artifactReviewPolicy`, `trustedWorkspaces`, and `permissions` into `~/.gemini/antigravity-cli/settings.json`. Do not replace the entire file, and do not replace existing choices with the example values. Adapt the permission policy to your trust model. AEO does not write this file.
-- [Codex MCP fragment](../presets/codex/config-block.example.toml). Merge the marked block into `<project>/.codex/config.toml`. Do not replace `~/.codex/config.toml`. `default_tools_approval_mode = "approve"` on the AEO server lets the Team Lead call the bridge without a prompt on every delegation. It does not approve Antigravity's shell commands, and it does not change the global approval policy.
+- [Codex MCP fragment](../presets/codex/config-block.example.toml). Merge the marked block into `<project>/.codex/config.toml`. Do not replace `~/.codex/config.toml`. `enabled_tools = ["delegate_antigravity", "apply_delegation", "discard_delegation"]` and `default_tools_approval_mode = "approve"` on the AEO server let the Team Lead call the bridge without a prompt on every delegation. It does not approve Antigravity's shell commands, and it does not change the global approval policy.
 
 You can merge these Team Lead command rules yourself. Bash rules cover macOS and Linux. PowerShell rules cover Windows. Delete the family you do not use. The installer will not write them.
 
@@ -44,6 +44,8 @@ Do not set a global "always proceed" or skip-permissions flag as the recommended
 ## Git
 
 Destructive Git commands are denied in the Antigravity example and in the manual Team Lead list above: push, reset, clean, rebase, merge, and commit. The Antigravity example also denies checkout and writes under `.git`. The policy tells both the Team Lead and the engineer not to rewrite history unless the user explicitly asks. The installer does not write those deny rules into Claude settings.
+
+The `git worktree add`, `git worktree remove`, and `git apply` operations run only inside the bridge tools for worktree isolation. They do not commit, push, reset, rebase, merge, or rewrite history, and because they run internally within the bridge process, they need no Team Lead shell allow rule. The Team Lead still must not execute git worktree or git apply commands directly in its shell.
 
 Deny rules are not a substitute for reading the diff. An allowed edit can still change the wrong file. The baseline check is what catches that.
 

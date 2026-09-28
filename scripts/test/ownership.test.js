@@ -12,6 +12,7 @@ import {
     CONFIG_BEGIN,
     CONFIG_END,
     PERMISSION,
+    PERMISSIONS,
     classifyOwned,
     doctor,
     formatPlan,
@@ -386,7 +387,7 @@ test("an existing AEO permission without a manifest is not overwritten or claime
         await mkdir(path.dirname(settingsPath), { recursive: true });
         const settings = {
             permissions: {
-                allow: ["Bash(git status*)", PERMISSION],
+                allow: ["Bash(git status*)", ...PERMISSIONS],
                 deny: ["Bash(git push*)"]
             },
             extra: true
@@ -398,7 +399,7 @@ test("an existing AEO permission without a manifest is not overwritten or claime
         assert.match(result.warnings.join("\n"), /will not claim/);
         assert.equal(await readFile(settingsPath, "utf8"), original);
         const manifest = JSON.parse(await readFile(path.join(target, ".aeo", "install-manifest.json"), "utf8"));
-        assert.equal(manifest.mergedEntries.some((entry) => entry.value === PERMISSION), false);
+        assert.equal(manifest.mergedEntries.some((entry) => entry.path === "permissions.allow"), false);
         const removed = await uninstall({ target, repoRoot });
         assert.equal(removed.ok, true, removed.error || "");
         assert.equal(await readFile(settingsPath, "utf8"), original);

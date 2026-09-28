@@ -2,7 +2,7 @@
 
 ## The MCP server does not appear
 
-Confirm the project MCP entry points at `<project>/.aeo/bridge/antigravity-mcp/index.js` with `node`, and that `npm ci` has been run in that directory. The server name is `aeo-antigravity`. Claude's allow entry is `mcp__aeo-antigravity__delegate_antigravity`, shown in the [permission fragment](../presets/claude/settings-permission.example.json).
+Confirm the project MCP entry points at `<project>/.aeo/bridge/antigravity-mcp/index.js` with `node`, and that `npm ci` has been run in that directory. The server name is `aeo-antigravity`. Claude's allow entries are `mcp__aeo-antigravity__delegate_antigravity`, `mcp__aeo-antigravity__apply_delegation`, and `mcp__aeo-antigravity__discard_delegation`, shown in the [permission fragment](../presets/claude/settings-permission.example.json).
 
 Start a new Team Lead session after changing MCP config. A session that was already open often keeps the previous tool list.
 
@@ -38,7 +38,7 @@ The timeout can be configured via the `AEO_AGY_TIMEOUT_MINUTES` environment vari
 
 ## MCP permission denied
 
-Claude's allow list must include `mcp__aeo-antigravity__delegate_antigravity` exactly, and the server must be named `aeo-antigravity`. Codex must list `delegate_antigravity` in `enabled_tools` and load the server. A denied MCP call never starts `agy`.
+Claude's allow list must include `mcp__aeo-antigravity__delegate_antigravity`, `mcp__aeo-antigravity__apply_delegation`, and `mcp__aeo-antigravity__discard_delegation`, and the server must be named `aeo-antigravity`. Codex must list `delegate_antigravity`, `apply_delegation`, and `discard_delegation` in `enabled_tools` and load the server. A denied MCP call never starts `agy`.
 
 ## Timeout mismatch
 
@@ -69,3 +69,43 @@ If the report says tests passed and the diagnostics say the test command was den
 ## Bridge command line is too long
 
 Very large prompts can exceed the Windows command-line limit. The bridge rejects a prompt over 24,000 characters and also rejects a constructed command that is still too long. Shorten the contract. Do not paste source files into the prompt. The engineer can read the repository.
+
+## Apply conflict (`apply_conflict`)
+
+`apply_delegation` runs `git apply --check` before applying changes to the main working tree. If the main tree has moved or accumulated edits since the delegation's base commit, or if the patch touches files modified by another applied delegation, `apply_delegation` returns `apply_conflict` without altering any files. Applying the same delegation a second time also returns `apply_conflict`.
+
+An `apply_conflict` is not a revision. Do not ask Antigravity to rebase or merge. Discard the delegation using `discard_delegation` and re-delegate the assignment against the current HEAD, or reconcile the differences manually in the main working tree.
+
+## Missing worktree or unknown delegation ID
+
+If `apply_delegation`, `discard_delegation`, or an isolated revision call fails with an unknown delegation ID or missing worktree directory error, the worktree path on disk may have been deleted.
+
+By default, worktrees reside under `<os tmpdir>/aeo-antigravity`. Operating systems or background cleanup utilities can purge temporary directories while a long session is running. If this occurs, the worktree cannot be resumed or applied. Discard any remaining reference and re-delegate from the current HEAD.
+
+To prevent temporary directory purges or use a dedicated location, set the `AEO_WORKTREE_ROOT` environment variable to a stable directory (for example, `AEO_WORKTREE_ROOT=C:\aeo-worktrees` or `export AEO_WORKTREE_ROOT=/var/tmp/aeo-worktrees`).
+
+## Stale or abandoned worktrees
+
+If a delegation is abandoned without calling `discard_delegation`, or if a process exits unexpectedly, the detached worktree may remain on disk and registered with Git.
+
+Inspect active worktrees with:
+
+```bash
+git worktree list
+```
+
+Clean up references to removed worktree directories with:
+
+```bash
+git worktree prune
+```
+
+If an unwanted worktree directory is still present on disk, remove it using `discard_delegation` with its `delegationId`, or delete the directory manually and run `git worktree prune`.
+
+## Windows long paths
+
+Detached git worktrees located in deeply nested temporary paths on Windows can exceed the standard 260-character path limit (`MAX_PATH`).
+
+The bridge passes `-c core.longpaths=true` during internal git calls. However, Windows system-level long path support may also need to be enabled in the operating system registry (`LongPathsEnabled` set to 1 under `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem`).
+
+If you encounter path-length errors on Windows, ensure `LongPathsEnabled` is enabled in Windows, or set `AEO_WORKTREE_ROOT` to a short directory path such as `C:\aeo-wt`.
