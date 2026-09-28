@@ -12,6 +12,7 @@ Use the lines that change the result. Omit the rest.
 - current behavior;
 - expected behavior;
 - non-goals;
+- file scope (required for parallel delegations: explicit list of files or directories);
 - architecture or compatibility constraints;
 - behavior that must remain unchanged;
 - acceptance criteria;
@@ -33,10 +34,14 @@ Expected behavior:
 Non-goals:
 <what not to redesign>
 
+File scope:
+<explicit list of permitted files or directories; required for parallel delegations>
+
 Constraints:
 - follow the existing architecture
 - preserve <public API or stored data> unless this assignment changes it
 - do not edit unrelated user changes already in the tree
+- stay within the specified file scope
 
 Acceptance:
 - <observable outcome>
@@ -50,6 +55,12 @@ Done when:
 - the acceptance lines are implemented
 - the completion report lists files, decisions, commands actually run, results, blocked commands, and remaining risks
 ```
+
+## Worktree isolation and dependencies
+
+When using `isolation: "worktree"` for parallel delegations, the engineer works in a detached git worktree created from committed HEAD. The worktree does not inherit uncommitted changes from the main working tree, nor does it contain untracked dependencies such as `node_modules`.
+
+As a result, engineer-side test or build runs in an isolated worktree may be incomplete or fail due to missing dependencies. In the contract, name which verification commands the engineer may attempt, and expect blocked or partial results. Authoritative verification takes place in the main tree after the delegation patch is applied.
 
 ## Example
 

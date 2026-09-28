@@ -28,7 +28,7 @@ MCP lets the Team Lead call the implementation model. The policy file decides wh
 
 | Piece | What it contributes |
 | --- | --- |
-| MCP bridge | Capability: `delegate_antigravity` |
+| MCP bridge | Capability: `delegate_antigravity`, `apply_delegation`, `discard_delegation` |
 | `AGENTS.md` or `CLAUDE.md` | Policy |
 | Model | Reasoning |
 | Repository and tests | Evidence |
@@ -130,13 +130,13 @@ npm install
 npm test
 ```
 
-`npm test` spawns the server on stdio and checks that `delegate_antigravity` is listed. A live edit still needs a logged-in `agy`:
+`npm test` spawns the server on stdio and checks that the tools (`delegate_antigravity`, `apply_delegation`, `discard_delegation`) are listed. A live edit still needs a logged-in `agy`:
 
 ```bash
 agy -p "Reply with the single word ready." --mode accept-edits --output-format json --print-timeout 2m
 ```
 
-The bridge calls `agy` with `--mode accept-edits`, `--output-format json`, and `--print-timeout 15m`. It kills the process at 16 minutes. Set the client tool timeout higher than that. The Codex example uses 1200 seconds. A current `agy --help` shows an unset print timeout of `0s` (wait until the turn finishes), so the bridge sets the limit itself.
+The bridge calls `agy` with `--mode accept-edits`, `--output-format json`, and `--print-timeout 15m`. It kills the process at 16 minutes. Set the client tool timeout higher than that. The Codex example uses 1200 seconds. A current `agy --help` shows an unset print timeout of `0s` (wait until the turn finishes), so the bridge sets the limit itself. Worktree isolation (`isolation: "worktree"`) runs the engineer in a detached worktree for parallel delegations, applied via `apply_delegation` and cleaned up with `discard_delegation`.
 
 ## What installation changes
 

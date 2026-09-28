@@ -1,6 +1,6 @@
 # Antigravity MCP bridge
 
-This process lets a Team Lead call the Antigravity CLI as an Implementation Engineer. It is an MCP stdio server with one tool, `delegate_antigravity`.
+This process lets a Team Lead call the Antigravity CLI as an Implementation Engineer. It is an MCP stdio server with three tools: `delegate_antigravity`, `apply_delegation`, and `discard_delegation`.
 
 The tool is the capability. The policy that decides when the call is mandatory is the Codex orchestration block or the Claude rule installed by [the AEO installer](../../docs/install.md).
 
@@ -16,6 +16,8 @@ The bridge does not approve work, measure cost, or choose a fallback model.
 | `cwd` | yes | Absolute path of the repository to inspect and edit. |
 | `model` | no | Antigravity model slug. Leave it unset to use the configured default model. |
 | `effort` | no | `low`, `medium`, or `high`. Any other value is rejected before `agy` starts. |
+| `isolation` | no | `none` or `worktree`. Default `none` edits `cwd` in place. `worktree` runs the engineer in a bridge-owned detached git worktree. |
+| `delegationId` | no | 10-character hexadecimal ID (`/^[a-f0-9]{10}$/`). With isolation `worktree`, revise an existing isolated delegation in its existing worktree. |
 
 The bridge rejects a relative path, a missing path, and a path that is not a directory. It then starts:
 
@@ -29,6 +31,18 @@ The wrapped prompt tells the engineer to inspect the repository, stay inside the
 
 Stdout of this process is MCP only. Diagnostics, including `antigravity-mcp: stdio server ready`, go to stderr.
 
+## Worktree isolation and new tools
+
+Parallel delegations must use `isolation: "worktree"` with non-overlapping file scopes so delegations do not touch the main working tree or each other.
+
+- **`apply_delegation`**: takes `cwd` and `delegationId`. Applies the patch of a worktree-isolated delegation to the main working tree as unstaged changes after a `git apply --check`. Applying the same delegation twice returns `apply_conflict`. The Team Lead must review the diff and re-run tests in the main tree after each apply. Apply one delegation at a time.
+- **`discard_delegation`**: takes `cwd` and `delegationId`. Removes the bridge-owned worktree and patch for a delegation. Call after apply or to abandon it. It never touches the main working tree.
+- **Storage**: Worktrees live under `AEO_WORKTREE_ROOT` or `<os tmpdir>/aeo-antigravity`.
+- **Dependencies and verification**: Untracked dependencies like `node_modules` are not present in the worktree so engineer-side test runs may not work there — the authoritative verification happens in the main tree after apply.
+- **Conflicts**: If the main tree moved or overlaps, `apply_delegation` returns `apply_conflict` without changing anything. An `apply_conflict` is not a revision; discard and re-delegate against current HEAD or reconcile manually.
+- **Busy guard**: A worktree delegation is marked busy while its engineer is running; concurrent revisions, applies, or discards for the same delegation ID return `validation_failure` until the run completes.
+- **Manual recovery**: Manual recovery for abandoned worktrees is `git worktree list` and `git worktree prune`.
+
 ## Results
 
 | Outcome | Meaning |
@@ -37,7 +51,13 @@ Stdout of this process is MCP only. Diagnostics, including `antigravity-mcp: std
 | `agent_failure` | The CLI exited 0 and the agent status was not a usable success. |
 | `cli_failure` | The process did not complete a run. Includes a missing `agy`, a non-zero exit, or invalid JSON. |
 | `timeout` | The 16-minute bridge limit stopped the process. |
-| `validation_failure` | The arguments were rejected before `agy` started. |
+| `validation_failure` | The arguments were rejected before starting. |
+| `applied` | Delegation patch applied to the main working tree as unstaged changes. |
+| `no_changes` | The isolated delegation produced no file changes to apply. |
+| `apply_conflict` | The patch failed `git apply --check` against the main working tree. |
+| `apply_error` | Failed to check or apply the patch. |
+| `discarded` | The worktree and patch were removed. |
+| `discard_error` | Failed to remove the worktree or clean up delegation resources. |
 
 Token counts in the metadata are copied from the CLI payload when it sends them. This bridge does not price tokens.
 
@@ -100,7 +120,7 @@ The managed block looks like this. Merge it. Do not replace the file. Replace `<
 command = "node"
 args = ["<PROJECT>/.aeo/bridge/antigravity-mcp/index.js"]
 enabled = true
-enabled_tools = ["delegate_antigravity"]
+enabled_tools = ["delegate_antigravity", "apply_delegation", "discard_delegation"]
 startup_timeout_sec = 30
 tool_timeout_sec = 1200
 default_tools_approval_mode = "approve"
@@ -135,8 +155,9 @@ To pass `AGY_BIN` through the MCP server instead of the parent environment, add 
 ## Layout
 
 - `index.js` starts the stdio server.
-- `lib/delegate.js` validates `cwd`, spawns `agy`, and classifies the result.
-- `lib/server.js` registers the tool.
+- `lib/delegate.js` validates arguments, spawns `agy`, manages worktrees and patches, and classifies results.
+- `lib/worktree.js` creates, patches, applies, and removes bridge-owned git worktrees.
+- `lib/server.js` registers the tools.
 - `test/` is the automated check. It does not call a live model.
 
 ## Troubleshooting

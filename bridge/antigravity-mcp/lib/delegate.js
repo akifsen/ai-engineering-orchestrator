@@ -2,15 +2,80 @@ import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
+import {
+    applyPatch,
+    buildPatch,
+    createWorktree,
+    isValidDelegationId,
+    loadDelegation,
+    normalizeRepoRoot,
+    removeWorktree,
+    resolveRepoRoot
+} from "./worktree.js";
+
 export const DEFAULT_TIMEOUT_MINUTES = 15;
 export const MIN_TIMEOUT_MINUTES = 1;
 export const MAX_TIMEOUT_MINUTES = 18;
 export const CLI_TIMEOUT = "15m";
 export const HARD_TIMEOUT_MS = 16 * 60 * 1000;
+export const TERMINATE_GRACE_MS = 10_000;
 export const MAX_PROMPT_CHARS = 24_000;
 export const MAX_REPORT_CHARS = 120_000;
 export const MAX_COLLECT_CHARS = 8_000_000;
 export const MAX_COMMAND_CHARS = 30_000;
+
+export const busyDelegations = new Set();
+
+export function makeBusyKey(repoRoot, delegationId) {
+    return `${normalizeRepoRoot(repoRoot)}:${delegationId}`;
+}
+
+export function formatGraceSeconds(ms) {
+    if (ms < 1000) {
+        return String(ms / 1000);
+    }
+    return String(Math.round(ms / 1000));
+}
+
+function waitForChildExit(child, graceMs) {
+    return new Promise((resolve) => {
+        if (!child) {
+            resolve(true);
+            return;
+        }
+
+        if (child.exitCode !== null && child.exitCode !== undefined) {
+            resolve(true);
+            return;
+        }
+
+        let timer = null;
+        let cleaned = false;
+
+        const cleanup = (confirmed) => {
+            if (cleaned) {
+                return;
+            }
+            cleaned = true;
+            if (timer !== null) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            child.removeListener?.("close", onClose);
+            child.removeListener?.("exit", onClose);
+            resolve(confirmed);
+        };
+
+        const onClose = () => cleanup(true);
+
+        child.once?.("close", onClose);
+        child.once?.("exit", onClose);
+
+        timer = setTimeout(() => {
+            cleanup(false);
+        }, graceMs);
+    });
+}
 
 const EFFORTS = new Set(["low", "medium", "high"]);
 const MODEL_SLUG = /^[A-Za-z0-9._:-]+$/;
@@ -216,6 +281,36 @@ function normalizeEffort(effort) {
     return effort;
 }
 
+const ISOLATIONS = new Set(["none", "worktree"]);
+
+export function normalizeIsolation(isolation) {
+    if (isolation === undefined || isolation === null || isolation === "") {
+        return "none";
+    }
+
+    if (typeof isolation !== "string" || !ISOLATIONS.has(isolation)) {
+        throw new Error("isolation must be one of: none, worktree.");
+    }
+
+    return isolation;
+}
+
+function normalizeDelegationId(delegationId, isolation) {
+    if (delegationId === undefined || delegationId === null) {
+        return undefined;
+    }
+
+    if (isolation !== "worktree") {
+        throw new Error("delegationId is only valid when isolation is \"worktree\".");
+    }
+
+    if (typeof delegationId !== "string" || !isValidDelegationId(delegationId)) {
+        throw new Error(`Invalid delegation ID: ${delegationId}`);
+    }
+
+    return delegationId;
+}
+
 function normalizePrompt(prompt) {
     if (typeof prompt !== "string" || prompt.trim() === "") {
         throw new Error("prompt is required.");
@@ -359,6 +454,7 @@ export function runAntigravity({
     bin,
     cliTimeout = CLI_TIMEOUT,
     hardTimeoutMs = HARD_TIMEOUT_MS,
+    terminateGraceMs = TERMINATE_GRACE_MS,
     maxCollectChars = MAX_COLLECT_CHARS,
     spawnImpl = spawn,
     terminateProcess = defaultTerminateProcess,
@@ -390,6 +486,7 @@ export function runAntigravity({
         let stderr = "";
         let settled = false;
         let overflow = false;
+        let timedOut = false;
         let hardTimeout = null;
 
         const finish = (result) => {
@@ -423,8 +520,17 @@ export function runAntigravity({
             return;
         }
 
-        hardTimeout = setTimeout(() => {
+        hardTimeout = setTimeout(async () => {
+            if (settled || overflow || timedOut) {
+                return;
+            }
+            timedOut = true;
             terminateProcess(child);
+            const confirmedExit = await waitForChildExit(child, terminateGraceMs);
+            const unconfirmedLine = !confirmedExit
+                ? `The process did not confirm exit within ${formatGraceSeconds(terminateGraceMs)}s; files in the working directory may still change.`
+                : null;
+
             finish(outcome({
                 outcomeName: "timeout",
                 isError: true,
@@ -433,20 +539,34 @@ export function runAntigravity({
                     `The bridge hard timeout (${Math.round(hardTimeoutMs / 60000)} minutes) elapsed.`,
                     `The CLI print timeout for this run was ${cliTimeout}.`,
                     "The process was terminated. Treat the implementation as not completed.",
+                    unconfirmedLine,
                     diagnosticBlock("CLI diagnostics", stderr).trim()
                 ].filter(Boolean).join("\n")
             }));
         }, hardTimeoutMs);
 
-        child.stdout?.on("data", (chunk) => {
+        child.stdout?.on("data", async (chunk) => {
+            if (settled || overflow || timedOut) {
+                return;
+            }
             const next = stdout + chunk.toString();
             if (next.length > maxCollectChars) {
                 overflow = true;
+                if (hardTimeout !== null) {
+                    clearTimeout(hardTimeout);
+                    hardTimeout = null;
+                }
                 stdout = next.slice(0, maxCollectChars);
                 terminateProcess(child);
+                const confirmedExit = await waitForChildExit(child, terminateGraceMs);
+                const unconfirmedLine = !confirmedExit
+                    ? `The process did not confirm exit within ${formatGraceSeconds(terminateGraceMs)}s; files in the working directory may still change.`
+                    : null;
+
                 finish(cliFailure([
                     "Antigravity produced more output than the bridge will collect.",
                     "The process was terminated. Treat the implementation as not completed.",
+                    unconfirmedLine,
                     diagnosticBlock("Partial CLI diagnostics", stderr).trim()
                 ].filter(Boolean)));
                 return;
@@ -463,6 +583,9 @@ export function runAntigravity({
         });
 
         child.on("error", (error) => {
+            if (overflow || timedOut) {
+                return;
+            }
             const missing = error && error.code === "ENOENT";
             finish(cliFailure([
                 missing
@@ -476,7 +599,7 @@ export function runAntigravity({
         });
 
         child.on("close", (code) => {
-            if (overflow) {
+            if (overflow || timedOut) {
                 return;
             }
 
@@ -610,22 +733,184 @@ export async function delegateToAntigravity(input, dependencies = {}) {
         const cwd = await validateWorkingDirectory(input?.cwd);
         const model = normalizeModel(input?.model);
         const effort = normalizeEffort(input?.effort);
+        const isolation = normalizeIsolation(input?.isolation);
+        const delegationId = normalizeDelegationId(input?.delegationId, isolation);
         const bin = dependencies.bin ?? resolveAgyBin(dependencies.env);
         const timeouts = resolveTimeouts(dependencies.env);
         warnInvalidTimeout(timeouts.warning);
         const cliTimeout = dependencies.cliTimeout ?? timeouts.cliTimeout;
         const hardTimeoutMs = dependencies.hardTimeoutMs ?? timeouts.hardTimeoutMs;
+        const terminateGraceMs = dependencies.terminateGraceMs ?? TERMINATE_GRACE_MS;
 
-        return await runAntigravity({
-            cliTimeout,
-            hardTimeoutMs,
-            ...dependencies,
-            prompt,
-            cwd,
-            model,
-            effort,
-            bin
-        });
+        if (isolation === "none") {
+            return await runAntigravity({
+                cliTimeout,
+                hardTimeoutMs,
+                terminateGraceMs,
+                ...dependencies,
+                prompt,
+                cwd,
+                model,
+                effort,
+                bin
+            });
+        }
+
+        const gitSpawnImpl = dependencies.gitSpawnImpl ?? spawn;
+        const env = dependencies.env ?? process.env;
+        const worktreeDeps = dependencies.worktree ?? {};
+        const createWorktreeImpl = worktreeDeps.createWorktree ?? createWorktree;
+        const loadDelegationImpl = worktreeDeps.loadDelegation ?? loadDelegation;
+        const buildPatchImpl = worktreeDeps.buildPatch ?? buildPatch;
+
+        let delegationContext;
+        const isRevision = Boolean(delegationId);
+        let busyKey = null;
+
+        if (isRevision) {
+            const loadRes = await loadDelegationImpl({
+                cwd,
+                delegationId,
+                env,
+                spawnImpl: gitSpawnImpl
+            });
+
+            if (!loadRes.ok) {
+                return outcome({
+                    outcomeName: "validation_failure",
+                    isError: true,
+                    text: [
+                        "Outcome: validation_failure",
+                        "The bridge rejected the delegation before starting Antigravity.",
+                        loadRes.error
+                    ].join("\n")
+                });
+            }
+
+            const candidateKey = makeBusyKey(loadRes.repoRoot, delegationId);
+            if (busyDelegations.has(candidateKey)) {
+                return outcome({
+                    outcomeName: "validation_failure",
+                    isError: true,
+                    text: [
+                        "Outcome: validation_failure",
+                        "The bridge rejected the delegation before starting Antigravity.",
+                        `Delegation ${delegationId} is already running; wait for it to finish before revising it.`
+                    ].join("\n")
+                });
+            }
+
+            busyKey = candidateKey;
+            busyDelegations.add(busyKey);
+
+            delegationContext = {
+                delegationId: loadRes.delegationId,
+                repoRoot: loadRes.repoRoot,
+                worktreePath: loadRes.worktreePath,
+                baseCommit: loadRes.baseCommit,
+                patchPath: loadRes.patchPath,
+                mainTreeStatus: null
+            };
+        } else {
+            const creation = await createWorktreeImpl({
+                cwd,
+                env,
+                spawnImpl: gitSpawnImpl
+            });
+
+            if (!creation.ok) {
+                return outcome({
+                    outcomeName: "validation_failure",
+                    isError: true,
+                    text: [
+                        "Outcome: validation_failure",
+                        "The bridge rejected the delegation before starting Antigravity.",
+                        creation.error
+                    ].join("\n")
+                });
+            }
+
+            busyKey = makeBusyKey(creation.repoRoot, creation.delegationId);
+            busyDelegations.add(busyKey);
+
+            delegationContext = {
+                delegationId: creation.delegationId,
+                repoRoot: creation.repoRoot,
+                worktreePath: creation.worktreePath,
+                baseCommit: creation.baseCommit,
+                patchPath: creation.patchPath,
+                mainTreeStatus: creation.mainTreeStatus
+            };
+        }
+
+        try {
+            const agyResult = await runAntigravity({
+                cliTimeout,
+                hardTimeoutMs,
+                terminateGraceMs,
+                ...dependencies,
+                prompt,
+                cwd: delegationContext.worktreePath,
+                model,
+                effort,
+                bin
+            });
+
+            let patchRes;
+            try {
+                patchRes = await buildPatchImpl({
+                    worktreePath: delegationContext.worktreePath,
+                    patchPath: delegationContext.patchPath,
+                    spawnImpl: gitSpawnImpl
+                });
+            } catch (error) {
+                patchRes = { ok: false, error: errorText(error) };
+            }
+
+            const isolationLines = [
+                "---",
+                "Isolation: worktree",
+                `Delegation ID: ${delegationContext.delegationId}`,
+                `Worktree: ${delegationContext.worktreePath}`,
+                `Base commit: ${delegationContext.baseCommit}`,
+                `Patch: ${delegationContext.patchPath}`,
+                "Main tree was not modified by this run. Nothing lands in the main tree until apply_delegation."
+            ];
+
+            if (patchRes.ok) {
+                isolationLines.push("Changes:");
+                isolationLines.push(patchRes.hasChanges ? (patchRes.diffstat || "No changes.") : "No changes.");
+            } else {
+                isolationLines.push(`Patch generation failed: ${patchRes.error}`);
+            }
+
+            if (!isRevision) {
+                isolationLines.push("Main tree status at worktree creation:");
+                isolationLines.push(delegationContext.mainTreeStatus ? delegationContext.mainTreeStatus : "clean");
+            }
+
+            isolationLines.push("Next: review with the patch/worktree, then call apply_delegation or discard_delegation with this delegation ID.");
+
+            const isError = !patchRes.ok ? true : agyResult.isError;
+            const text = `${agyResult.text}\n\n${isolationLines.join("\n")}`;
+
+            return {
+                outcome: agyResult.outcome,
+                isError,
+                text,
+                delegation: {
+                    delegationId: delegationContext.delegationId,
+                    worktreePath: delegationContext.worktreePath,
+                    baseCommit: delegationContext.baseCommit,
+                    patchPath: delegationContext.patchPath,
+                    hasChanges: Boolean(patchRes.ok && patchRes.hasChanges)
+                }
+            };
+        } finally {
+            if (busyKey !== null) {
+                busyDelegations.delete(busyKey);
+            }
+        }
     } catch (error) {
         return outcome({
             outcomeName: "validation_failure",
@@ -633,6 +918,274 @@ export async function delegateToAntigravity(input, dependencies = {}) {
             text: [
                 "Outcome: validation_failure",
                 "The bridge rejected the delegation before starting Antigravity.",
+                errorText(error)
+            ].join("\n")
+        });
+    }
+}
+
+export async function applyDelegation(input, dependencies = {}) {
+    try {
+        const delegationId = input?.delegationId;
+        if (!isValidDelegationId(delegationId)) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the delegation request.",
+                    `Invalid delegation ID: ${delegationId}`
+                ].join("\n")
+            });
+        }
+
+        let validatedCwd;
+        try {
+            validatedCwd = await validateWorkingDirectory(input?.cwd);
+        } catch (error) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the delegation request.",
+                    errorText(error)
+                ].join("\n")
+            });
+        }
+
+        const gitSpawnImpl = dependencies.gitSpawnImpl ?? spawn;
+        const env = dependencies.env ?? process.env;
+        const worktreeDeps = dependencies.worktree ?? {};
+        const loadDelegationImpl = worktreeDeps.loadDelegation ?? loadDelegation;
+        const applyPatchImpl = worktreeDeps.applyPatch ?? applyPatch;
+
+        const loadRes = await loadDelegationImpl({
+            cwd: validatedCwd,
+            delegationId,
+            env,
+            spawnImpl: gitSpawnImpl
+        });
+
+        if (!loadRes.ok) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the delegation request.",
+                    loadRes.error
+                ].join("\n")
+            });
+        }
+
+        const busyKey = makeBusyKey(loadRes.repoRoot, delegationId);
+        if (busyDelegations.has(busyKey)) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the delegation request.",
+                    `Delegation ${delegationId} is already running; wait for it to finish before applying it.`
+                ].join("\n")
+            });
+        }
+
+        const applyRes = await applyPatchImpl({
+            repoRoot: loadRes.repoRoot,
+            patchPath: loadRes.patchPath,
+            spawnImpl: gitSpawnImpl
+        });
+
+        if (applyRes.outcome === "apply_conflict") {
+            return outcome({
+                outcomeName: "apply_conflict",
+                isError: true,
+                text: [
+                    "Outcome: apply_conflict",
+                    `The main tree moved or overlaps since base commit ${loadRes.baseCommit}.`,
+                    "This is not a revision; discard and re-delegate against the current HEAD or reconcile manually.",
+                    "",
+                    "Git diagnostics:",
+                    applyRes.error
+                ].filter(Boolean).join("\n")
+            });
+        }
+
+        if (applyRes.outcome === "apply_error" || !applyRes.ok) {
+            return outcome({
+                outcomeName: "apply_error",
+                isError: true,
+                text: [
+                    "Outcome: apply_error",
+                    `Failed to apply delegation ${delegationId}:`,
+                    applyRes.error
+                ].filter(Boolean).join("\n")
+            });
+        }
+
+        if (applyRes.applied === false || applyRes.reason === "no changes") {
+            return outcome({
+                outcomeName: "no_changes",
+                isError: false,
+                text: [
+                    "Outcome: no_changes",
+                    `Delegation ${delegationId} has no changes to apply.`
+                ].join("\n")
+            });
+        }
+
+        return outcome({
+            outcomeName: "applied",
+            isError: false,
+            text: [
+                "Outcome: applied",
+                `Delegation ${delegationId} applied successfully.`,
+                "Changes are now unstaged in the main working tree.",
+                "Team Lead must diff and re-run tests.",
+                "The worktree still exists until discard_delegation."
+            ].join("\n")
+        });
+    } catch (error) {
+        return outcome({
+            outcomeName: "apply_error",
+            isError: true,
+            text: [
+                "Outcome: apply_error",
+                "An unexpected error occurred while applying the delegation.",
+                errorText(error)
+            ].join("\n")
+        });
+    }
+}
+
+export async function discardDelegation(input, dependencies = {}) {
+    try {
+        const delegationId = input?.delegationId;
+        if (!isValidDelegationId(delegationId)) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the discard request.",
+                    `Invalid delegation ID: ${delegationId}`
+                ].join("\n")
+            });
+        }
+
+        let validatedCwd;
+        try {
+            validatedCwd = await validateWorkingDirectory(input?.cwd);
+        } catch (error) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the discard request.",
+                    errorText(error)
+                ].join("\n")
+            });
+        }
+
+        const gitSpawnImpl = dependencies.gitSpawnImpl ?? spawn;
+        const env = dependencies.env ?? process.env;
+        const worktreeDeps = dependencies.worktree ?? {};
+        const resolveRepoRootImpl = worktreeDeps.resolveRepoRoot ?? resolveRepoRoot;
+        const loadDelegationImpl = worktreeDeps.loadDelegation ?? loadDelegation;
+        const removeWorktreeImpl = worktreeDeps.removeWorktree ?? removeWorktree;
+
+        const repoRes = await resolveRepoRootImpl(validatedCwd, { spawnImpl: gitSpawnImpl });
+        if (!repoRes.ok) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the discard request.",
+                    repoRes.error
+                ].join("\n")
+            });
+        }
+
+        let repoRoot = repoRes.repoRoot;
+        const busyKey = makeBusyKey(repoRoot, delegationId);
+        if (busyDelegations.has(busyKey)) {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the discard request.",
+                    `Delegation ${delegationId} is already running; wait for it to finish before discarding it.`
+                ].join("\n")
+            });
+        }
+
+        const loadRes = await loadDelegationImpl({
+            cwd: validatedCwd,
+            delegationId,
+            env,
+            spawnImpl: gitSpawnImpl
+        });
+
+        if (loadRes.ok) {
+            repoRoot = loadRes.repoRoot;
+        } else if (
+            loadRes.reason === "missing_worktree" ||
+            (!loadRes.reason && loadRes.error && loadRes.error.startsWith("Missing worktree directory"))
+        ) {
+            if (loadRes.repoRoot) {
+                repoRoot = loadRes.repoRoot;
+            }
+        } else {
+            return outcome({
+                outcomeName: "validation_failure",
+                isError: true,
+                text: [
+                    "Outcome: validation_failure",
+                    "The bridge rejected the discard request.",
+                    loadRes.error
+                ].join("\n")
+            });
+        }
+
+        const removeRes = await removeWorktreeImpl({
+            repoRoot,
+            delegationId,
+            env,
+            spawnImpl: gitSpawnImpl
+        });
+
+        if (!removeRes.ok) {
+            return outcome({
+                outcomeName: "discard_error",
+                isError: true,
+                text: [
+                    "Outcome: discard_error",
+                    `Failed to discard delegation ${delegationId}:`,
+                    removeRes.error
+                ].filter(Boolean).join("\n")
+            });
+        }
+
+        return outcome({
+            outcomeName: "discarded",
+            isError: false,
+            text: [
+                "Outcome: discarded",
+                `Delegation ${delegationId} discarded.`
+            ].join("\n")
+        });
+    } catch (error) {
+        return outcome({
+            outcomeName: "discard_error",
+            isError: true,
+            text: [
+                "Outcome: discard_error",
+                "An unexpected error occurred while discarding the delegation.",
                 errorText(error)
             ].join("\n")
         });

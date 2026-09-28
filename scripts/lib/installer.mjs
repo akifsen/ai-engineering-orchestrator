@@ -13,6 +13,11 @@ export const CONFIG_BEGIN = "# >>> AEO MANAGED CONFIG BEGIN";
 export const CONFIG_END = "# <<< AEO MANAGED CONFIG END";
 
 export const PERMISSION = "mcp__aeo-antigravity__delegate_antigravity";
+export const PERMISSIONS = [
+    PERMISSION,
+    "mcp__aeo-antigravity__apply_delegation",
+    "mcp__aeo-antigravity__discard_delegation"
+];
 export const MCP_ID = "aeo-antigravity";
 
 export const CODEX_TABLES = [
@@ -457,7 +462,7 @@ export function codexConfigBlock(bridgeIndex, target) {
         'command = "node"',
         `args = ["${bridge}"]`,
         "enabled = true",
-        'enabled_tools = ["delegate_antigravity"]',
+        'enabled_tools = ["delegate_antigravity", "apply_delegation", "discard_delegation"]',
         "startup_timeout_sec = 30",
         "tool_timeout_sec = 1200",
         'default_tools_approval_mode = "approve"',
@@ -539,6 +544,13 @@ async function ownedPresetFiles(presets, options, layout = null) {
         });
     }
     return items;
+}
+
+export function ownsValue(manifest, file, entryPath, value) {
+    if (!manifest) {
+        return false;
+    }
+    return (manifest.mergedEntries || []).some((entry) => entry.file === file && entry.path === entryPath && entry.value === value);
 }
 
 function owns(manifest, file, entryPath) {
@@ -828,16 +840,26 @@ export async function planInstall(options) {
                 const allow = parsed?.permissions?.allow;
                 if (allow !== undefined && !Array.isArray(allow)) {
                     conflicts.push(`${relativeSettings} permissions.allow is not an array. Installation stopped.`);
-                } else if (Array.isArray(allow) && allow.includes(PERMISSION)) {
-                    const isOwned = owns(manifest, relativeSettings, "permissions.allow");
-                    if (!isOwned && adopt) {
+                } else {
+                    const allowList = Array.isArray(allow) ? allow : [];
+                    const missing = PERMISSIONS.filter((perm) => !allowList.includes(perm));
+                    let hasUnownedAdopted = false;
+                    for (const perm of PERMISSIONS) {
+                        if (allowList.includes(perm)) {
+                            const isOwned = ownsValue(manifest, relativeSettings, "permissions.allow", perm);
+                            if (!isOwned && adopt) {
+                                hasUnownedAdopted = true;
+                            }
+                        }
+                    }
+                    if (hasUnownedAdopted) {
                         adopted.push(`${relativeSettings} AEO permission`);
                     }
                     preserve.push(relativeSettings);
-                } else {
-                    preserve.push(relativeSettings);
-                    backups.push(relativeSettings);
-                    merge.push(`${relativeSettings} AEO permission`);
+                    if (missing.length > 0) {
+                        backups.push(relativeSettings);
+                        merge.push(`${relativeSettings} AEO permission`);
+                    }
                 }
             } catch {
                 conflicts.push(`${relativeSettings} is not valid JSON. Installation stopped.`);
@@ -1102,7 +1124,7 @@ export async function install(options) {
     }
 
     let claimMcp = false;
-    let claimPermission = false;
+    let claimPermissions = [];
     const installed = [...bridgeEntries];
     const blocks = [];
     try {
@@ -1224,7 +1246,7 @@ export async function install(options) {
                 adopted,
                 writeImpl
             });
-            claimPermission = await mergePermission({
+            claimPermissions = await mergePermission({
                 layout,
                 target: layout.root,
                 manifest: plan.manifest,
@@ -1247,7 +1269,7 @@ export async function install(options) {
             claude: options.claude,
             created: [...created],
             claimMcp,
-            claimPermission,
+            claimPermissions,
             installed,
             blocks,
             layout
@@ -1472,30 +1494,44 @@ async function mergePermission({
     if (!Array.isArray(parsed.permissions.allow)) {
         throw new Error(`${relative} permissions.allow is not an array. Installation stopped.`);
     }
-    const already = parsed.permissions.allow.includes(PERMISSION);
-    const owned = owns(manifest, relative, "permissions.allow");
-    if (already && !owned && current !== null) {
-        if (adopt) {
-            adopted?.push(`${relative} AEO permission`);
-            return true;
+    const toAdd = [];
+    const claimPermissions = [];
+    let hasAdopted = false;
+    for (const perm of PERMISSIONS) {
+        const already = parsed.permissions.allow.includes(perm);
+        const owned = ownsValue(manifest, relative, "permissions.allow", perm);
+        if (already && !owned && current !== null) {
+            if (adopt) {
+                hasAdopted = true;
+                claimPermissions.push(perm);
+            } else {
+                const hint = (layout?.mode === "global" && !adopt) ? " Pass --adopt to claim it." : "";
+                warnings.push(`The AEO permission ${perm} is already present and was not added by a previous AEO manifest. AEO will not claim it.${hint}`);
+            }
+        } else if (already) {
+            claimPermissions.push(perm);
+        } else {
+            toAdd.push(perm);
+            claimPermissions.push(perm);
         }
-        const hint = (layout?.mode === "global" && !adopt) ? " Pass --adopt to claim it." : "";
-        warnings.push(`The AEO permission is already present and was not added by a previous AEO manifest. AEO will not claim it.${hint}`);
-        return false;
     }
-    if (already) {
-        return true;
+
+    if (hasAdopted) {
+        adopted?.push(`${relative} AEO permission`);
     }
-    parsed.permissions.allow.push(PERMISSION);
-    const next = `${JSON.stringify(parsed, null, 2)}\n`;
-    if (current === null) {
-        created.add(toPosix(relative));
-    } else {
-        backupFiles.push(await backupFile(homeDir, id, when, layout ? layout.root : target, relative));
+
+    if (toAdd.length > 0) {
+        parsed.permissions.allow.push(...toAdd);
+        const next = `${JSON.stringify(parsed, null, 2)}\n`;
+        if (current === null) {
+            created.add(toPosix(relative));
+        } else {
+            backupFiles.push(await backupFile(homeDir, id, when, layout ? layout.root : target, relative));
+        }
+        await writeAtomic(file, next, writeImpl);
+        changed.push(toPosix(relative));
     }
-    await writeAtomic(file, next, writeImpl);
-    changed.push(toPosix(relative));
-    return true;
+    return claimPermissions;
 }
 
 function unique(values) {
@@ -1547,7 +1583,10 @@ function mergeBlocks(previous, next, installedFiles = []) {
 function combineManifest(previous, next) {
     const entries = new Map();
     for (const entry of [...(previous?.mergedEntries || []), ...(next.mergedEntries || [])]) {
-        entries.set(`${entry.file}\0${entry.path}`, entry);
+        const key = entry.value !== undefined
+            ? `${entry.file}\0${entry.path}\0${entry.value}`
+            : `${entry.file}\0${entry.path}`;
+        entries.set(key, entry);
     }
     const mergedInstalled = mergeInstalled(previous, next.installedFiles);
     return {
@@ -1562,7 +1601,7 @@ function combineManifest(previous, next) {
     };
 }
 
-function buildManifest({ id, codex, claude, created, claimMcp, claimPermission, installed, blocks, layout }) {
+function buildManifest({ id, codex, claude, created, claimMcp, claimPermissions, installed, blocks, layout }) {
     const mergedEntries = [];
     const targets = [];
     if (codex) {
@@ -1575,11 +1614,12 @@ function buildManifest({ id, codex, claude, created, claimMcp, claimPermission, 
         if (claimMcp) {
             mergedEntries.push({ file: mcpRel, path: "mcpServers.aeo-antigravity" });
         }
-        if (claimPermission) {
+        const perms = Array.isArray(claimPermissions) ? claimPermissions : [];
+        for (const value of perms) {
             mergedEntries.push({
                 file: settingsRel,
                 path: "permissions.allow",
-                value: PERMISSION
+                value
             });
         }
     }
@@ -1842,12 +1882,17 @@ async function removePermission(layout, manifest, changed) {
     if (current === null) {
         return;
     }
-    if (!(manifest.mergedEntries || []).some((entry) => entry.value === PERMISSION)) {
+    const ownedPermissions = new Set(
+        (manifest.mergedEntries || [])
+            .filter((entry) => entry.file === relative && entry.path === "permissions.allow" && typeof entry.value === "string")
+            .map((entry) => entry.value)
+    );
+    if (ownedPermissions.size === 0) {
         return;
     }
     const parsed = JSON.parse(current);
     if (parsed.permissions && Array.isArray(parsed.permissions.allow)) {
-        parsed.permissions.allow = parsed.permissions.allow.filter((entry) => entry !== PERMISSION);
+        parsed.permissions.allow = parsed.permissions.allow.filter((entry) => !ownedPermissions.has(entry));
     }
     const allow = parsed.permissions?.allow || [];
     const otherPermissionKeys = parsed.permissions
@@ -1983,7 +2028,8 @@ export async function status(options) {
         rule: await exists(layout.claudeRuleFile),
         agents: await Promise.all(CLAUDE_AGENTS.map(async (fileName) => exists(path.join(layout.claudeAgentsDir, fileName)))),
         server: false,
-        permission: false
+        permission: false,
+        permissions: Object.fromEntries(PERMISSIONS.map((perm) => [perm, false]))
     };
     const mcpText = await readText(layout.claudeMcpFile);
     if (mcpText) {
@@ -1998,9 +2044,16 @@ export async function status(options) {
     if (settingsText) {
         try {
             const parsed = JSON.parse(settingsText);
-            report.claude.permission = Boolean(parsed.permissions?.allow?.includes(PERMISSION));
+            const allow = Array.isArray(parsed.permissions?.allow) ? parsed.permissions.allow : [];
+            const permissionsMap = {};
+            for (const perm of PERMISSIONS) {
+                permissionsMap[perm] = allow.includes(perm);
+            }
+            report.claude.permissions = permissionsMap;
+            report.claude.permission = PERMISSIONS.every((perm) => allow.includes(perm));
         } catch {
             report.claude.permission = false;
+            report.claude.permissions = Object.fromEntries(PERMISSIONS.map((perm) => [perm, false]));
         }
     }
     report.bridge = {
@@ -2114,6 +2167,21 @@ export async function doctor(options) {
     const manifest = await loadManifest(layout);
     if (manifest && manifest.schemaVersion !== 1 && manifest.schemaVersion !== SCHEMA_VERSION) {
         problems.push("Unsupported AEO manifest schema.");
+    }
+    if (manifest && manifest.targets && manifest.targets.includes("claude")) {
+        const settingsText = await readText(layout.claudeSettingsFile);
+        if (settingsText !== null) {
+            try {
+                const parsed = JSON.parse(settingsText);
+                const allow = Array.isArray(parsed.permissions?.allow) ? parsed.permissions.allow : [];
+                const missing = PERMISSIONS.filter((perm) => !allow.includes(perm));
+                if (missing.length > 0) {
+                    warnings.push(`Missing Claude permissions: ${missing.join(", ")}`);
+                }
+            } catch {
+                // Invalid JSON handled above
+            }
+        }
     }
     for (const row of await ownershipReport(layout, manifest)) {
         if (row.state === "unowned") {

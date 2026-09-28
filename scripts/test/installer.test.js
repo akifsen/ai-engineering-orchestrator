@@ -13,9 +13,11 @@ import {
     CONFIG_BEGIN,
     CONFIG_END,
     PERMISSION,
+    PERMISSIONS,
     doctor,
     duplicateTables,
     install,
+    ownsValue,
     projectId,
     status,
     uninstall
@@ -209,7 +211,7 @@ test("existing Codex and Claude configuration survives install, reinstall, and u
         assert.equal(mcp.mcpServers["aeo-antigravity"].command, "node");
         assert.equal(Object.keys(mcp.mcpServers)[0], "docs");
         const settings = JSON.parse(await readFile(path.join(target, ".claude", "settings.local.json"), "utf8"));
-        assert.deepEqual(settings.permissions.allow, ["Bash(git status*)", PERMISSION]);
+        assert.deepEqual(settings.permissions.allow, ["Bash(git status*)", ...PERMISSIONS]);
         assert.deepEqual(settings.permissions.deny, ["Bash(git push*)"]);
         assert.equal(settings.extra, true);
         assert.equal(await readFile(path.join(target, "src", "keep.txt"), "utf8"), "keep\n");
@@ -482,7 +484,7 @@ test("a pre-existing AEO permission is not claimed or removed", async () => {
     try {
         const settings = {
             permissions: {
-                allow: [PERMISSION, "Bash(git status*)"],
+                allow: [...PERMISSIONS, "Bash(git status*)"],
                 deny: ["Bash(git push*)"]
             }
         };
@@ -493,9 +495,50 @@ test("a pre-existing AEO permission is not claimed or removed", async () => {
         assert.match(result.warnings.join("\n"), /will not claim/);
         assert.equal(await readFile(path.join(target, ".claude", "settings.local.json"), "utf8"), original);
         const manifest = JSON.parse(await readFile(path.join(target, ".aeo", "install-manifest.json"), "utf8"));
-        assert.equal(manifest.mergedEntries.some((entry) => entry.value === PERMISSION), false);
+        assert.equal(manifest.mergedEntries.some((entry) => entry.path === "permissions.allow"), false);
         await uninstall({ target });
         assert.equal(await readFile(path.join(target, ".claude", "settings.local.json"), "utf8"), original);
+    } finally {
+        await cleanup(target, home);
+    }
+});
+
+test("removePermission does not strip permissions recorded for a different file", async () => {
+    const { target, home } = await makeWorkspace();
+    try {
+        const settings = {
+            permissions: {
+                allow: [PERMISSION, "Bash(git status*)"]
+            }
+        };
+        const settingsPath = path.join(target, ".claude", "settings.local.json");
+        await mkdir(path.dirname(settingsPath), { recursive: true });
+        await writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+
+        const manifest = {
+            schemaVersion: 2,
+            aeoVersion: "1.0.0",
+            projectId: "test",
+            targets: ["claude"],
+            createdFiles: [],
+            installedFiles: [],
+            managedBlocks: [],
+            mergedEntries: [
+                {
+                    file: ".claude/other-settings.json",
+                    path: "permissions.allow",
+                    value: PERMISSION
+                }
+            ]
+        };
+        const manifestDir = path.join(target, ".aeo");
+        await mkdir(manifestDir, { recursive: true });
+        await writeFile(path.join(manifestDir, "install-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+
+        const removed = await uninstall({ target });
+        assert.equal(removed.ok, true, removed.error || "");
+        const settingsAfter = JSON.parse(await readFile(settingsPath, "utf8"));
+        assert.equal(settingsAfter.permissions.allow.includes(PERMISSION), true, "permission recorded for other file must not be removed");
     } finally {
         await cleanup(target, home);
     }
@@ -645,6 +688,305 @@ test("backup file and directory permissions are restricted to owner (0600 / 0700
         }
     } finally {
         await cleanup(target, home);
+    }
+});
+
+test("fresh install adds all three permissions and manifest has three permission entries", async () => {
+    const { target, home } = await makeWorkspace();
+    try {
+        const result = await install(baseOptions(target, home));
+        assert.equal(result.ok, true, result.error || "");
+        const settings = JSON.parse(await readFile(path.join(target, ".claude", "settings.local.json"), "utf8"));
+        for (const perm of PERMISSIONS) {
+            assert.ok(settings.permissions.allow.includes(perm), `settings should include ${perm}`);
+        }
+        const manifest = JSON.parse(await readFile(path.join(target, ".aeo", "install-manifest.json"), "utf8"));
+        const permEntries = manifest.mergedEntries.filter((e) => e.path === "permissions.allow");
+        assert.equal(permEntries.length, 3);
+        for (const perm of PERMISSIONS) {
+            assert.ok(permEntries.some((e) => e.value === perm), `manifest should own ${perm}`);
+        }
+    } finally {
+        await cleanup(target, home);
+    }
+});
+
+test("upgrade from an old manifest adds the two new permissions and claims them while delegate stays claimed", async () => {
+    const { target, home } = await makeWorkspace();
+    try {
+        const settingsPath = path.join(target, ".claude", "settings.local.json");
+        await writeFile(settingsPath, `${JSON.stringify({
+            permissions: {
+                allow: ["Bash(git status*)", PERMISSION],
+                deny: ["Bash(git push*)"]
+            },
+            extra: true
+        }, null, 2)}\n`);
+
+        const manifestPath = path.join(target, ".aeo", "install-manifest.json");
+        await mkdir(path.dirname(manifestPath), { recursive: true });
+        await writeFile(manifestPath, `${JSON.stringify({
+            schemaVersion: 2,
+            aeoVersion: "1.0.0",
+            projectId: projectId(target),
+            targets: ["claude"],
+            createdFiles: [],
+            installedFiles: [],
+            managedBlocks: [],
+            mergedEntries: [
+                { file: ".claude/settings.local.json", path: "permissions.allow", value: PERMISSION }
+            ]
+        }, null, 2)}\n`);
+
+        const upgraded = await install(baseOptions(target, home, { codex: false, claude: true }));
+        assert.equal(upgraded.ok, true, upgraded.error || "");
+
+        const settingsAfter = JSON.parse(await readFile(settingsPath, "utf8"));
+        for (const perm of PERMISSIONS) {
+            assert.ok(settingsAfter.permissions.allow.includes(perm), `settings should have ${perm}`);
+        }
+
+        const manifestAfter = JSON.parse(await readFile(manifestPath, "utf8"));
+        const permEntries = manifestAfter.mergedEntries.filter((e) => e.path === "permissions.allow");
+        assert.equal(permEntries.length, 3);
+        for (const perm of PERMISSIONS) {
+            assert.ok(permEntries.some((e) => e.value === perm), `manifest should own ${perm}`);
+        }
+    } finally {
+        await cleanup(target, home);
+    }
+});
+
+test("user pre-existing unowned apply_delegation permission is not claimed and warning emitted while others added; with adopt it is claimed", async () => {
+    const unownedPerm = "mcp__aeo-antigravity__apply_delegation";
+
+    // Part A: Without adopt
+    {
+        const { target, home } = await makeWorkspace();
+        try {
+            const settingsPath = path.join(target, ".claude", "settings.local.json");
+            await writeFile(settingsPath, `${JSON.stringify({
+                permissions: {
+                    allow: ["Bash(git status*)", unownedPerm],
+                    deny: ["Bash(git push*)"]
+                },
+                extra: true
+            }, null, 2)}\n`);
+
+            const result = await install(baseOptions(target, home, { codex: false, claude: true }));
+            assert.equal(result.ok, true, result.error || "");
+            assert.ok(result.warnings.some((w) => w.includes("will not claim") && w.includes(unownedPerm)));
+
+            const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+            for (const perm of PERMISSIONS) {
+                assert.ok(settings.permissions.allow.includes(perm));
+            }
+
+            const manifest = JSON.parse(await readFile(path.join(target, ".aeo", "install-manifest.json"), "utf8"));
+            const permEntries = manifest.mergedEntries.filter((e) => e.path === "permissions.allow");
+            assert.equal(permEntries.length, 2);
+            assert.equal(permEntries.some((e) => e.value === unownedPerm), false);
+            assert.ok(permEntries.some((e) => e.value === PERMISSION));
+            assert.ok(permEntries.some((e) => e.value === "mcp__aeo-antigravity__discard_delegation"));
+
+            const unres = await uninstall({ target });
+            assert.equal(unres.ok, true, unres.error || "");
+            const settingsFinal = JSON.parse(await readFile(settingsPath, "utf8"));
+            assert.deepEqual(settingsFinal.permissions.allow, ["Bash(git status*)", unownedPerm]);
+        } finally {
+            await cleanup(target, home);
+        }
+    }
+
+    // Part B: With adopt (in global mode where adopt is supported)
+    {
+        const home = await mkdtemp(path.join(os.tmpdir(), "aeo-adopt-home-"));
+        try {
+            const settingsPath = path.join(home, ".claude", "settings.json");
+            await mkdir(path.dirname(settingsPath), { recursive: true });
+            await writeFile(settingsPath, `${JSON.stringify({
+                permissions: { allow: [unownedPerm] }
+            }, null, 2)}\n`);
+
+            const result = await install({
+                global: true,
+                homeDir: home,
+                repoRoot,
+                npmCi: fakeNpmCi,
+                codex: false,
+                claude: true,
+                adopt: true
+            });
+            assert.equal(result.ok, true, result.error || "");
+            assert.equal(result.warnings.some((w) => w.includes(unownedPerm)), false);
+
+            const manifest = JSON.parse(await readFile(path.join(home, ".aeo", "global-install-manifest.json"), "utf8"));
+            const permEntries = manifest.mergedEntries.filter((e) => e.path === "permissions.allow");
+            assert.equal(permEntries.length, 3);
+            assert.ok(permEntries.some((e) => e.value === unownedPerm));
+        } finally {
+            await rm(home, { recursive: true, force: true });
+        }
+    }
+});
+
+test("uninstall removes only owned values; a user-owned copy survives; old-manifest uninstall removes only delegate", async () => {
+    // Sub-case 1: User-added copy survives uninstall
+    {
+        const { target, home } = await makeWorkspace();
+        try {
+            const settingsPath = path.join(target, ".claude", "settings.local.json");
+            await writeFile(settingsPath, `${JSON.stringify({
+                permissions: { allow: ["mcp__aeo-antigravity__apply_delegation"] }
+            }, null, 2)}\n`);
+
+            const result = await install(baseOptions(target, home, { codex: false, claude: true }));
+            assert.equal(result.ok, true);
+
+            const removed = await uninstall({ target });
+            assert.equal(removed.ok, true);
+            const settingsFinal = JSON.parse(await readFile(settingsPath, "utf8"));
+            assert.deepEqual(settingsFinal.permissions.allow, ["mcp__aeo-antigravity__apply_delegation"]);
+        } finally {
+            await cleanup(target, home);
+        }
+    }
+
+    // Sub-case 2: Old manifest only owns delegate; uninstall removes only delegate
+    {
+        const { target, home } = await makeWorkspace();
+        try {
+            const settingsPath = path.join(target, ".claude", "settings.local.json");
+            await writeFile(settingsPath, `${JSON.stringify({
+                permissions: { allow: [PERMISSION, "mcp__aeo-antigravity__apply_delegation"] }
+            }, null, 2)}\n`);
+
+            const manifestPath = path.join(target, ".aeo", "install-manifest.json");
+            await mkdir(path.dirname(manifestPath), { recursive: true });
+            await writeFile(manifestPath, `${JSON.stringify({
+                schemaVersion: 2,
+                aeoVersion: "1.0.0",
+                projectId: projectId(target),
+                targets: ["claude"],
+                createdFiles: [],
+                installedFiles: [],
+                managedBlocks: [],
+                mergedEntries: [
+                    { file: ".claude/settings.local.json", path: "permissions.allow", value: PERMISSION }
+                ]
+            }, null, 2)}\n`);
+
+            const removed = await uninstall({ target });
+            assert.equal(removed.ok, true, removed.error || "");
+            const settingsFinal = JSON.parse(await readFile(settingsPath, "utf8"));
+            assert.deepEqual(settingsFinal.permissions.allow, ["mcp__aeo-antigravity__apply_delegation"]);
+        } finally {
+            await cleanup(target, home);
+        }
+    }
+});
+
+test("status reports per-permission booleans and permission false when one is missing", async () => {
+    const { target, home } = await makeWorkspace();
+    try {
+        const settingsPath = path.join(target, ".claude", "settings.local.json");
+        // Include delegate and apply, but omit discard
+        await writeFile(settingsPath, `${JSON.stringify({
+            permissions: {
+                allow: [
+                    PERMISSION,
+                    "mcp__aeo-antigravity__apply_delegation"
+                ]
+            }
+        }, null, 2)}\n`);
+
+        const rep = await status({ target, homeDir: home });
+        assert.equal(rep.claude.permission, false);
+        assert.equal(rep.claude.permissions[PERMISSION], true);
+        assert.equal(rep.claude.permissions["mcp__aeo-antigravity__apply_delegation"], true);
+        assert.equal(rep.claude.permissions["mcp__aeo-antigravity__discard_delegation"], false);
+
+        // Now add discard_delegation
+        await writeFile(settingsPath, `${JSON.stringify({
+            permissions: {
+                allow: PERMISSIONS
+            }
+        }, null, 2)}\n`);
+
+        const repComplete = await status({ target, homeDir: home });
+        assert.equal(repComplete.claude.permission, true);
+        for (const perm of PERMISSIONS) {
+            assert.equal(repComplete.claude.permissions[perm], true);
+        }
+    } finally {
+        await cleanup(target, home);
+    }
+});
+
+test("codex block contains three tools; unmodified old block refreshed on update; user-modified block still preserved", async () => {
+    // Part A: Unmodified old block refreshed on update
+    {
+        const { target, home } = await makeWorkspace();
+        try {
+            const first = await install(baseOptions(target, home, { codex: true, claude: false }));
+            assert.equal(first.ok, true, first.error || "");
+
+            const configPath = path.join(target, ".codex", "config.toml");
+            const manifestPath = path.join(target, ".aeo", "install-manifest.json");
+
+            const currentConfig = await readFile(configPath, "utf8");
+            assert.match(currentConfig, /enabled_tools = \["delegate_antigravity", "apply_delegation", "discard_delegation"\]/);
+
+            const oldConfigBlock = currentConfig.replace(
+                'enabled_tools = ["delegate_antigravity", "apply_delegation", "discard_delegation"]',
+                'enabled_tools = ["delegate_antigravity"]'
+            );
+            await writeFile(configPath, oldConfigBlock);
+
+            const innerOld = oldConfigBlock.slice(
+                oldConfigBlock.indexOf(CONFIG_BEGIN) + CONFIG_BEGIN.length,
+                oldConfigBlock.indexOf(CONFIG_END)
+            );
+            const oldHash = createHash("sha256").update(Buffer.from(innerOld, "utf8")).digest("hex");
+
+            const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+            const block = manifest.managedBlocks.find((b) => b.id === "AEO_CONFIG");
+            block.sha256 = oldHash;
+            await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+            const updated = await install(baseOptions(target, home, { codex: true, claude: false, npmCi: async () => {} }));
+            assert.equal(updated.ok, true, updated.error || "");
+            assert.ok(updated.safeUpdate.includes(".codex/config.toml AEO config block"));
+
+            const refreshedConfig = await readFile(configPath, "utf8");
+            assert.match(refreshedConfig, /enabled_tools = \["delegate_antigravity", "apply_delegation", "discard_delegation"\]/);
+        } finally {
+            await cleanup(target, home);
+        }
+    }
+
+    // Part B: User-modified block preserved (drift protection)
+    {
+        const { target, home } = await makeWorkspace();
+        try {
+            const first = await install(baseOptions(target, home, { codex: true, claude: false }));
+            assert.equal(first.ok, true, first.error || "");
+
+            const configPath = path.join(target, ".codex", "config.toml");
+            const originalConfig = await readFile(configPath, "utf8");
+
+            const modifiedConfig = originalConfig.replace(CONFIG_BEGIN, `${CONFIG_BEGIN}\n# USER CUSTOM EDIT`);
+            await writeFile(configPath, modifiedConfig);
+
+            const second = await install(baseOptions(target, home, { codex: true, claude: false, npmCi: async () => {} }));
+            assert.equal(second.ok, true, second.error || "");
+            assert.ok(second.userModified.includes(".codex/config.toml AEO config block"));
+
+            const preservedConfig = await readFile(configPath, "utf8");
+            assert.match(preservedConfig, /# USER CUSTOM EDIT/);
+        } finally {
+            await cleanup(target, home);
+        }
     }
 });
 

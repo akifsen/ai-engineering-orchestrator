@@ -21,7 +21,7 @@ A future mapping can send the same Implementation Engineer role to another CLI o
 | Architect | Design reasoning when the blast radius justifies it. Installed as `aeo_architect` or `aeo-architect`. |
 | Reviewer | An independent challenge. No approval power. Installed as `aeo_reviewer` or `aeo-reviewer`. |
 | fast-worker | A trivial mechanical edit only. Installed as `aeo_fast_worker` or `aeo-fast-worker`. |
-| MCP bridge | The capability that lets the Team Lead call Antigravity. The server id is `aeo-antigravity`. |
+| MCP bridge | The capability that lets the Team Lead call Antigravity (`delegate_antigravity`), apply isolated patches (`apply_delegation`), and clean up worktrees (`discard_delegation`). The server id is `aeo-antigravity`. |
 | Policy | Codex: an AEO block in the project `AGENTS.md`. Claude: `.claude/rules/aeo-orchestration.md`. Existing `AGENTS.md` and `CLAUDE.md` text stays. |
 | Repository and tests | The evidence used at the quality gate. |
 
@@ -33,11 +33,11 @@ The bridge does not choose the route. A model does not become the authority beca
 2. The Team Lead records `git status --short` before substantive work.
 3. Explorer returns files and symbols when the Team Lead does not already know where the change lives.
 4. Architect returns constraints when the design is consequential. The Team Lead still owns the decision.
-5. The Team Lead writes an [implementation contract](implementation-contract.md) and calls `delegate_antigravity` with the absolute repository path.
-6. Antigravity edits inside that directory and returns a completion report. The bridge labels the run `agent_success`, `agent_failure`, `cli_failure`, `timeout`, or `validation_failure`.
-7. The Team Lead compares the working tree with the baseline, reads the diff, and runs or checks the relevant tests.
+5. The Team Lead writes an [implementation contract](implementation-contract.md) and calls `delegate_antigravity` with the absolute repository path. For parallel work, delegations specify `isolation: "worktree"` with non-overlapping file scopes; default sequential work edits `cwd` in place.
+6. Antigravity edits inside that directory (or an isolated worktree) and returns a completion report. The bridge labels the run `agent_success`, `agent_failure`, `cli_failure`, `timeout`, or `validation_failure`.
+7. For an isolated delegation, the Team Lead applies the patch to the main tree using `apply_delegation` (one at a time), which checks and applies unstaged changes (or reports `apply_conflict`, `no_changes`, or `apply_error`). The Team Lead compares the working tree with the baseline, reads the diff, and runs or checks the relevant tests.
 8. Reviewer may challenge the diff. The Team Lead checks material findings, including any claim about who edited a file.
-9. The Team Lead chooses APPROVED or CHANGES REQUIRED. A required revision goes back to Antigravity.
+9. The Team Lead chooses APPROVED or CHANGES REQUIRED. A required revision goes back to Antigravity (reusing `delegationId` for worktree isolation). Once approved or abandoned, the worktree is cleaned up with `discard_delegation`.
 
 ```mermaid
 flowchart TD
@@ -55,6 +55,10 @@ flowchart TD
   gate --> required[CHANGES REQUIRED]
   required --> engineer
 ```
+
+## Parallel delegation
+
+Worktree isolation enables concurrent delegations without git conflicts in the main tree. Each parallel delegation requires `isolation: "worktree"` and an explicit, non-overlapping file scope. The bridge manages worktree creation and removal from committed HEAD. Because isolated worktrees do not include uncommitted changes or untracked dependencies like `node_modules`, engineer-side tests in the worktree may be partial or blocked. Nothing lands in the main tree until `apply_delegation`. The Team Lead reviews the diff, applies delegations one at a time, verifies git status and tests in the main tree after each apply, and removes finished worktrees with `discard_delegation`.
 
 ## What is not in this repository
 

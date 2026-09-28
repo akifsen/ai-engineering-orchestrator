@@ -11,6 +11,7 @@ import {
     CONFIG_BEGIN,
     CONFIG_END,
     PERMISSION,
+    PERMISSIONS,
     TRUST_NOTE_GLOBAL,
     doctor,
     formatPlan,
@@ -87,7 +88,7 @@ test("case a: global install creates all expected files, entries, and blocks", a
         // ~/.claude/settings.json allow entry
         assert.equal(await exists(path.join(home, ".claude", "settings.json")), true);
         const settingsJson = JSON.parse(await readFile(path.join(home, ".claude", "settings.json"), "utf8"));
-        assert.ok(settingsJson.permissions?.allow?.includes(PERMISSION));
+        assert.ok(PERMISSIONS.every((perm) => settingsJson.permissions?.allow?.includes(perm)));
 
         // ~/.codex/agents/aeo_*.toml
         for (const name of ["aeo-explorer.toml", "aeo-architect.toml", "aeo-reviewer.toml", "aeo-fast-worker.toml"]) {
@@ -181,7 +182,7 @@ custom_setting = "yes"
         const settingsPostInstall = JSON.parse(await readFile(path.join(home, ".claude", "settings.json"), "utf8"));
         assert.equal(settingsPostInstall.unrelatedSetting, true);
         assert.ok(settingsPostInstall.permissions.allow.includes("unrelated-allow"));
-        assert.ok(settingsPostInstall.permissions.allow.includes(PERMISSION));
+        assert.ok(PERMISSIONS.every((perm) => settingsPostInstall.permissions.allow.includes(perm)));
 
         const configPostInstall = await readFile(path.join(home, ".codex", "config.toml"), "utf8");
         assert.ok(configPostInstall.includes("[user_table]"));
@@ -203,7 +204,7 @@ custom_setting = "yes"
         const settingsPostUninstall = JSON.parse(await readFile(path.join(home, ".claude", "settings.json"), "utf8"));
         assert.equal(settingsPostUninstall.unrelatedSetting, true);
         assert.ok(settingsPostUninstall.permissions.allow.includes("unrelated-allow"));
-        assert.equal(settingsPostUninstall.permissions.allow.includes(PERMISSION), false);
+        assert.ok(PERMISSIONS.every((perm) => !settingsPostUninstall.permissions.allow.includes(perm)));
 
         assert.equal(await exists(path.join(home, ".codex", "config.toml")), true);
         const configPostUninstall = await readFile(path.join(home, ".codex", "config.toml"), "utf8");

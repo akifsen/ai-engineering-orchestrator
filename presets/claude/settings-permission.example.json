@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "mcp__aeo-antigravity__delegate_antigravity"
+      "mcp__aeo-antigravity__delegate_antigravity",
+      "mcp__aeo-antigravity__apply_delegation",
+      "mcp__aeo-antigravity__discard_delegation"
     ]
   }
 }

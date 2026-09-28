@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { PERMISSION, install, uninstall } from "../lib/installer.mjs";
+import { PERMISSION, PERMISSIONS, install, uninstall } from "../lib/installer.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -99,7 +99,9 @@ config_file = "C:/custom/reviewer.toml"
         assert.deepEqual(mcpAfter.mcpServers.docs, mcp.mcpServers.docs);
         assert.equal(Object.keys(mcpAfter.mcpServers).filter((key) => key === "aeo-antigravity").length, 1);
         const settingsAfter = JSON.parse(await readFile(path.join(target, ".claude", "settings.local.json"), "utf8"));
-        assert.equal(settingsAfter.permissions.allow.filter((entry) => entry === PERMISSION).length, 1);
+        for (const perm of PERMISSIONS) {
+            assert.equal(settingsAfter.permissions.allow.filter((entry) => entry === perm).length, 1);
+        }
 
         const removed = await uninstall({ target });
         assert.equal(removed.ok, true, removed.error || "");

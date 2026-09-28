@@ -10,7 +10,7 @@
 command = "node"
 args = ["<PROJECT>/.aeo/bridge/antigravity-mcp/index.js"]
 enabled = true
-enabled_tools = ["delegate_antigravity"]
+enabled_tools = ["delegate_antigravity", "apply_delegation", "discard_delegation"]
 startup_timeout_sec = 30
 tool_timeout_sec = 1200
 default_tools_approval_mode = "approve"

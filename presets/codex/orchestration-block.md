@@ -1,6 +1,6 @@
 AEO orchestration rules determine agent ownership and delegation. Existing repository-specific architecture, domain, testing, security, style, and operational instructions remain applicable. If an existing project instruction conflicts with this orchestration policy and both cannot be followed, surface the conflict. Do not silently ignore the project requirement.
 
-The MCP server is `aeo-antigravity`. Call `delegate_antigravity` on that server. Do not look for a generic server named `antigravity`.
+The MCP server is `aeo-antigravity`. Call `delegate_antigravity` on that server. The same server also provides `apply_delegation` and `discard_delegation` for worktree-isolated delegations. Do not look for a generic server named `antigravity`.
 
 Installed Codex role ids:
 
@@ -134,6 +134,28 @@ Bad: `Fix the project.`
 
 Better: `Stop releasing a reservation when payment capture fails. Keep the public checkout API. Add a regression test for the failed-capture path. Run the checkout tests. Report anything you could not run.`
 
+## Parallel delegation
+
+Default sequential delegation edits `cwd` in place (isolation omitted or `"none"`). Worktree isolation is opt-in and required only for parallel runs.
+
+Parallel delegations are allowed only when each has an explicit file scope that does not overlap any other parallel delegation's scope or the user's uncommitted changes. If scopes cannot be stated as non-overlapping, delegate sequentially instead.
+
+Every parallel delegation must pass `isolation: "worktree"`. The bridge creates and removes the worktree; Antigravity never does git worktree or branch operations; the Team Lead does not run `git worktree` or `git apply` itself.
+
+A worktree starts from the committed HEAD. It does not contain the main tree's uncommitted changes or untracked dependencies such as `node_modules`, so engineer-side test runs there may be incomplete. Name which verification the engineer may run and expect blocked or partial results. Authoritative verification happens in the main tree after apply.
+
+Nothing lands in the main tree until `apply_delegation`. Review each delegation's report and patch/diffstat first.
+
+Apply one delegation at a time. After each apply: read `git status --short` and the diff in the main tree, run the relevant tests there, and decide APPROVED or CHANGES REQUIRED before applying the next one.
+
+`apply_conflict` means the main tree moved or overlaps since the base commit. It is not a revision. Discard and re-delegate against the current HEAD, or reconcile manually. Never ask Antigravity to rebase or merge. Applying the same delegation twice also returns `apply_conflict`.
+
+A revision of an isolated delegation passes the same `delegationId` so the engineer continues in the same worktree. Do not run two delegations against the same `delegationId` at the same time.
+
+Call `discard_delegation` after a delegation is applied and approved, or abandoned. Leftovers can be inspected with `git worktree list` and cleaned with `git worktree prune`.
+
+Parallelism multiplies Team Lead review cost; use it only for genuinely independent work.
+
 ## What Antigravity must do
 
 Expect the engineer to inspect the repository first, follow the existing architecture, finish the bounded scope, avoid unrelated edits, preserve compatibility unless the contract changes it, add or update tests when behavior changes, and run the verification it is allowed to run.
@@ -151,6 +173,12 @@ Bridge outcomes mean:
 - `cli_failure`: the process did not complete a run. Not an implementation result.
 - `timeout`: the bridge stopped the process. The work is not complete.
 - `validation_failure`: the call was rejected before Antigravity started.
+- `applied`: patch applied to the main working tree as unstaged changes. Not approval.
+- `no_changes`: the isolated delegation produced no file changes to apply.
+- `apply_conflict`: the patch failed `git apply --check` against the main working tree. Not a revision.
+- `apply_error`: failed to check or apply the patch.
+- `discarded`: the worktree and patch were removed.
+- `discard_error`: failed to remove the worktree or clean up delegation resources.
 
 Permission notices on the CLI diagnostics are blocked commands, not passing tests.
 
@@ -159,6 +187,8 @@ Permission notices on the CLI diagnostics are blocked commands, not passing test
 Before substantive work, record `git status --short` and the relevant existing diff.
 
 That baseline separates pre-existing user work, Antigravity's edits, native-agent edits, and other concurrent changes.
+
+For an isolated delegation, the bridge's base commit and patch are that delegation's baseline. The main-tree `git status --short` baseline still applies and must be re-read before the first apply and after every apply. Changes that appear in the main tree after an apply are attributed to that delegation only when they match its patch/diffstat.
 
 After delegation, compare the baseline with the current status and diff. Attribute a change to the user, Antigravity, a native agent, or another process only when the baseline and the current repository show that. Do not use an aeo_reviewer narrative, a timestamp, or file presence as ownership proof.
 
@@ -238,7 +268,9 @@ Then review again. Repeat until you can approve, or until you need the user to r
 
 Do not commit, push, reset, rebase, merge, or rewrite history unless the user explicitly asks. Do not skip hooks. Do not stage unrelated user changes.
 
-Antigravity is under the same restriction. If a diff changes `.git` metadata or history, stop and tell the user.
+`git worktree add`, `git worktree remove`, and `git apply` run only inside the bridge tools; they do not commit, push, reset, rebase, merge, or rewrite history, and they are the only git writes the orchestration performs. The Team Lead still must not run them directly.
+
+Antigravity is under the same restriction. If a diff changes `.git` metadata or history, stop and tell the user. Bridge-owned worktree admin entries under `.git/worktrees` are the only expected exception.
 
 ## Final authority
 

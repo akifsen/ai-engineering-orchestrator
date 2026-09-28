@@ -4,16 +4,22 @@ After Antigravity returns, the Team Lead decides. The decision is APPROVED or CH
 
 ## Before the decision
 
-Record `git status --short` before substantive work. After the run, compare that baseline with the current status and diff. Then:
+Record `git status --short` before substantive work. After the run, compare that baseline with the current status and diff.
 
+For worktree-isolated delegations, the bridge's base commit and patch serve as that delegation's baseline. The main-tree `git status --short` baseline still applies and must be re-read before the first apply and after every apply. Changes that appear in the main tree after an apply are attributed to that delegation only when they match its patch/diffstat.
+
+Apply isolated delegations one at a time using `apply_delegation`. After each apply:
+
+- read `git status --short` and the diff in the main tree;
 - read the files that materially changed;
 - check the implementation contract and the acceptance criteria;
 - look for unrelated edits;
 - read the tests that should have changed;
-- run, or independently confirm, the most relevant verification;
-- treat a command the engineer could not run as not run.
+- run, or independently confirm, the most relevant verification in the main tree;
+- treat a command the engineer could not run as not run;
+- decide APPROVED or CHANGES REQUIRED before applying the next delegation.
 
-An `agent_success` label means the CLI finished and returned a report. It does not mean the tests passed. A permission denial in the CLI diagnostics is a blocked command.
+An `agent_success` or `applied` label means the CLI finished or the patch applied. It does not mean tests passed or that the work is approved. An `apply_conflict` outcome means the patch could not apply because the main tree moved or overlaps; it is not approval and not a revision. A permission denial in the CLI diagnostics is a blocked command.
 
 Do not attribute a dirty file to Antigravity, the user, or another agent without the baseline. The baseline section in the Team Lead policy shows the rule with a generic diff: a reviewer sentence is not ownership evidence.
 
