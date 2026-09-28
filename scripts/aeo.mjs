@@ -36,12 +36,15 @@ function usage() {
         "    [--dry-run]",
         "    [--force-managed-update]",
         "    [--force-remove-modified]",
+        "    [--global]",
+        "    [--adopt]",
+        "    [--replace-codex-agents-md]",
         "",
         "Pass --codex, --claude, or both. AEO does not guess which tools to configure.",
         "install and update reconcile the project. They do not overwrite AEO files you edited.",
         "--dry-run writes nothing. --force-managed-update replaces edited AEO files after writing a backup.",
         "uninstall keeps edited AEO files unless you pass --force-remove-modified.",
-        "Project Codex and Claude changes stay inside the target. Global Codex and Claude config is not edited.",
+        "Project Codex and Claude changes stay inside the target. Global Codex and Claude config is not edited unless --global.",
         "-h and --help print this usage."
     ].join("\n");
 }
@@ -53,8 +56,19 @@ if (help || !known.has(command)) {
     process.exit(help ? 0 : 1);
 }
 
+const isGlobal = flag("--global");
+const hasTarget = flag("--target");
 const target = option("--target");
-if (!target || target.startsWith("--")) {
+const adopt = flag("--adopt");
+const replaceCodexAgentsMd = flag("--replace-codex-agents-md");
+
+if ((isGlobal && hasTarget) || (!isGlobal && !hasTarget)) {
+    console.error("Pass either --target <project> or --global, not both.");
+    console.error(usage());
+    process.exit(1);
+}
+
+if (hasTarget && (!target || target.startsWith("--"))) {
     console.error("Pass --target <project>.");
     console.error(usage());
     process.exit(1);
@@ -69,7 +83,7 @@ const forceRemoveModified = flag("--force-remove-modified");
 
 try {
     if (command === "install" || command === "update") {
-        const result = await install({ target, codex, claude, dryRun, repoRoot, forceManagedUpdate });
+        const result = await install({ target, global: isGlobal, adopt, replaceCodexAgentsMd, codex, claude, dryRun, repoRoot, forceManagedUpdate });
         console.log(formatPlan(result));
         if (result.ok && !dryRun && result.changed.length === 0) {
             console.log("No changes.");
@@ -80,7 +94,7 @@ try {
         process.exit(result.ok ? 0 : 1);
     }
     if (command === "uninstall") {
-        const result = await uninstall({ target, repoRoot, forceRemoveModified });
+        const result = await uninstall({ target, global: isGlobal, adopt, replaceCodexAgentsMd, repoRoot, forceRemoveModified });
         if (!result.ok) {
             console.error(result.error);
             process.exit(1);
@@ -98,7 +112,7 @@ try {
         process.exit(0);
     }
     if (command === "status") {
-        const report = await status({ target });
+        const report = await status({ target, global: isGlobal, adopt, replaceCodexAgentsMd });
         console.log(JSON.stringify({
             installed: report.installed,
             projectId: report.manifest?.projectId || null,
@@ -110,7 +124,7 @@ try {
         }, null, 2));
         process.exit(0);
     }
-    const report = await doctor({ target });
+    const report = await doctor({ target, global: isGlobal, adopt, replaceCodexAgentsMd });
     for (const problem of report.problems) {
         console.error(`Problem: ${problem}`);
     }

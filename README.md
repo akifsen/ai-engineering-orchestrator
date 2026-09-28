@@ -92,25 +92,31 @@ Model names in the Codex agent files are examples. Replace them with models your
 
 ## Quick start
 
-Run a dry-run before the install. AEO modifies Codex and Claude project configuration only inside the target project, and only AEO-owned names. Global Codex config and global Claude config are not modified by default. Recovery backups for shared files are stored separately under `~/.aeo/backups/<project-id>/<timestamp>/`. Those backups are recovery material. Uninstall does not restore an older backup over newer user config.
+Run a dry-run before the install. AEO modifies Codex and Claude project configuration only inside the target project, and only AEO-owned names. Global Codex config and global Claude config are not modified unless `--global`. Recovery backups for shared files are stored separately under `~/.aeo/backups/<project-id>/<timestamp>/` (or `~/.aeo/backups/global/<timestamp>/` in global mode). Those backups are recovery material. Uninstall does not restore an older backup over newer user config.
 
 ```bash
+# Project install
 node scripts/aeo.mjs install --target C:/path/to/project --codex --claude --dry-run
 node scripts/aeo.mjs install --target C:/path/to/project --codex --claude
 node scripts/aeo.mjs doctor --target C:/path/to/project
+
+# Global install (user scope)
+node scripts/aeo.mjs install --global --codex --claude --dry-run
+node scripts/aeo.mjs install --global --codex --claude
+node scripts/aeo.mjs doctor --global
 ```
 
 1. Clone or download this repository.
 2. Confirm the Antigravity CLI works: `agy -p "Reply with the single word ready." --mode accept-edits --output-format json --print-timeout 2m`
 3. Dry-run, then install into the target project.
-4. Read the change summary. Backups of shared files that AEO actually changes are under `~/.aeo/backups/<project-id>/<timestamp>/`.
+4. Read the change summary. Backups of shared files that AEO actually changes are under `~/.aeo/backups/<project-id>/<timestamp>/` (or `~/.aeo/backups/global/<timestamp>/`).
 5. Start a new Codex or Claude session.
 6. Run doctor.
 7. Run [Test B](examples/smoke-test.md). Test B does not name Antigravity. A substantive fix should still be delegated.
 
 Pass `--codex`, `--claude`, or both. If you pass neither, the installer stops instead of guessing. `install.ps1` and `install.sh` call the same Node command. `update` is the same reconcile as `install`. It refreshes AEO material that still matches the last installed bytes. It does not overwrite agent files, the Claude orchestration rule, bridge source, or the interior of an AEO block after you edit them. `--force-managed-update` is the explicit opt-in for that replacement, and it backs up the drifted file first. That opt-in applies only to files and blocks the active install manifest already owns. Markers alone are not ownership. If `AGENTS.md` or `.codex/config.toml` already contains an AEO block and the manifest does not own it, the installer stops and leaves that block unchanged. Matching AEO content is not treated as proof of ownership. If an AEO-namespaced file already exists but is not recorded in the active install manifest, AEO preserves it and reports a collision. The file may come from a manual copy, an older setup, or an install that stopped before the manifest was saved, and matching bytes do not give AEO the right to delete it.
 
-Codex loads `<project>/.codex/config.toml` only when the project is trusted. AEO does not change trust. Trust the project in the normal Codex UX if the project config does not appear. Codex CLI and Codex IDE share configuration layers, which is why the installer does not edit `~/.codex/config.toml`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, or `~/.claude.json`.
+Codex loads `<project>/.codex/config.toml` only when the project is trusted. AEO does not change trust. Trust the project in the normal Codex UX if the project config does not appear. Codex CLI and Codex IDE share configuration layers, which is why the installer does not edit `~/.codex/config.toml`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, or `~/.claude.json` unless `--global`.
 
 The manual merge, if you do not want the installer, is in [docs/install.md](docs/install.md).
 

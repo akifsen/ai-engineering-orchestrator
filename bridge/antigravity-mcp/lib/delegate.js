@@ -2,6 +2,9 @@ import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 
+export const DEFAULT_TIMEOUT_MINUTES = 15;
+export const MIN_TIMEOUT_MINUTES = 1;
+export const MAX_TIMEOUT_MINUTES = 18;
 export const CLI_TIMEOUT = "15m";
 export const HARD_TIMEOUT_MS = 16 * 60 * 1000;
 export const MAX_PROMPT_CHARS = 24_000;
@@ -30,6 +33,52 @@ export function parseDurationMs(value) {
     return amount * scale[unit];
 }
 
+export function resolveTimeouts(env = process.env) {
+    const raw = env?.AEO_AGY_TIMEOUT_MINUTES;
+    if (raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "")) {
+        return {
+            minutes: DEFAULT_TIMEOUT_MINUTES,
+            cliTimeout: CLI_TIMEOUT,
+            hardTimeoutMs: HARD_TIMEOUT_MS,
+            warning: null
+        };
+    }
+
+    const trimmed = typeof raw === "string" ? raw.trim() : String(raw);
+    if (!/^-?\d+$/.test(trimmed)) {
+        return {
+            minutes: DEFAULT_TIMEOUT_MINUTES,
+            cliTimeout: CLI_TIMEOUT,
+            hardTimeoutMs: HARD_TIMEOUT_MS,
+            warning: `Invalid AEO_AGY_TIMEOUT_MINUTES "${raw}". Falling back to ${DEFAULT_TIMEOUT_MINUTES} minutes.`
+        };
+    }
+
+    const parsed = Number.parseInt(trimmed, 10);
+    const clamped = Math.max(MIN_TIMEOUT_MINUTES, Math.min(MAX_TIMEOUT_MINUTES, parsed));
+
+    return {
+        minutes: clamped,
+        cliTimeout: `${clamped}m`,
+        hardTimeoutMs: (clamped + 1) * 60 * 1000,
+        warning: null
+    };
+}
+
+const startupTimeouts = resolveTimeouts(process.env);
+if (startupTimeouts.warning) {
+    console.error(startupTimeouts.warning);
+}
+
+let firstUseWarned = false;
+
+function warnInvalidTimeout(warning) {
+    if (warning && !firstUseWarned) {
+        firstUseWarned = true;
+        console.error(warning);
+    }
+}
+
 export function resolveAgyBin(env = process.env) {
     const configured = env.AGY_BIN;
     if (typeof configured === "string" && configured.trim()) {
@@ -46,6 +95,8 @@ export function buildImplementationPrompt(prompt) {
         "",
         "Rules:",
         "- Inspect the repository before editing.",
+        "- Prefer built-in file read, search, and edit tools over shell commands. In headless mode a shell command outside the allowlist can end the whole run without output.",
+        "- Run only the verification commands the assignment names or that are clearly allowed; do not improvise extra shell commands.",
         "- Follow the existing architecture.",
         "- Complete the delegated bounded scope.",
         "- Avoid unrelated modifications.",
@@ -490,6 +541,31 @@ export function runAntigravity({
                 : "";
 
             if (!response) {
+                let advice = "";
+                if (
+                    diagnostics.includes('required the "command" permission') ||
+                    diagnostics.includes("soft-deny") ||
+                    diagnostics.includes("soft-denied")
+                ) {
+                    advice = [
+                        "",
+                        "Likely cause:",
+                        "A shell command was denied by the Antigravity permission policy.",
+                        "",
+                        "Next step:",
+                        "Tell the engineer exactly which commands it may run, or add a narrow allow rule in ~/.gemini/antigravity-cli/settings.json (docs/permissions.md)."
+                    ].join("\n");
+                } else if (diagnostics.includes("print timeout")) {
+                    advice = [
+                        "",
+                        "Likely cause:",
+                        "The print timeout elapsed; partial edits may exist on disk — compare git status with the baseline before retrying.",
+                        "",
+                        "Next step:",
+                        "Split the assignment into smaller sequential delegations."
+                    ].join("\n");
+                }
+
                 finish(outcome({
                     outcomeName: "agent_failure",
                     isError: true,
@@ -500,7 +576,8 @@ export function runAntigravity({
                         diagnosticBlock("CLI diagnostics", diagnostics).trim(),
                         "",
                         "Execution metadata:",
-                        formatMetadata(payload)
+                        formatMetadata(payload),
+                        advice
                     ].filter(Boolean).join("\n")
                 }));
                 return;
@@ -534,8 +611,14 @@ export async function delegateToAntigravity(input, dependencies = {}) {
         const model = normalizeModel(input?.model);
         const effort = normalizeEffort(input?.effort);
         const bin = dependencies.bin ?? resolveAgyBin(dependencies.env);
+        const timeouts = resolveTimeouts(dependencies.env);
+        warnInvalidTimeout(timeouts.warning);
+        const cliTimeout = dependencies.cliTimeout ?? timeouts.cliTimeout;
+        const hardTimeoutMs = dependencies.hardTimeoutMs ?? timeouts.hardTimeoutMs;
 
         return await runAntigravity({
+            cliTimeout,
+            hardTimeoutMs,
             ...dependencies,
             prompt,
             cwd,

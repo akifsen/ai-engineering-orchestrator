@@ -23,7 +23,7 @@ The bridge rejects a relative path, a missing path, and a path that is not a dir
 agy --mode accept-edits --output-format json --print-timeout 15m -p <wrapped prompt>
 ```
 
-The executable is `AGY_BIN` when that environment variable is set, otherwise `agy`. Arguments are passed without a shell. The bridge sets `--print-timeout 15m` and kills the process at 16 minutes. Client timeouts must be longer than 16 minutes. The Codex example uses 1200 seconds. The explicit limit is intentional: `agy --help` on a current build shows a default of `0s`, which waits until the turn finishes.
+The executable is `AGY_BIN` when that environment variable is set, otherwise `agy`. Arguments are passed without a shell. The bridge sets `--print-timeout <N>m` (default `15m`) and kills the process at `N+1` minutes (default 16 minutes), configurable via `AEO_AGY_TIMEOUT_MINUTES`. Client timeouts must be longer than the hard timeout. The Codex example uses 1200 seconds. The explicit limit is intentional: `agy --help` on a current build shows a default of `0s`, which waits until the turn finishes.
 
 The wrapped prompt tells the engineer to inspect the repository, stay inside the contract, run allowed verification, avoid git history changes, and return a seven-part report. The Team Lead still has to read the diff.
 
@@ -76,6 +76,18 @@ export AGY_BIN=/usr/local/bin/agy
 ```
 
 Do not commit that path. Export it in the environment of the process that starts the server. The default install does not write it into Codex or Claude config.
+
+Set `AEO_AGY_TIMEOUT_MINUTES` to customize the delegation timeout in minutes:
+
+```bash
+# Windows
+set AEO_AGY_TIMEOUT_MINUTES=15
+
+# macOS or Linux
+export AEO_AGY_TIMEOUT_MINUTES=15
+```
+
+`AEO_AGY_TIMEOUT_MINUTES` must be an integer. It defaults to 15 minutes and is clamped to 1..18 minutes. The CLI print timeout is set to $N$ minutes (`${N}m`) and the bridge hard timeout is set to $N+1$ minutes. The 18-minute cap guarantees the hard timeout (19 minutes) finishes before the Codex client timeout (`tool_timeout_sec = 1200`, 20 minutes) can abort the MCP call. Invalid values fall back to 15 with a warning on stderr.
 
 ## Codex registration
 

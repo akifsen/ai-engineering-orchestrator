@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -628,3 +628,23 @@ test("a timed-out npm ci does not activate MCP configuration", async () => {
         await cleanup(target, home);
     }
 });
+
+test("backup file and directory permissions are restricted to owner (0600 / 0700)", {
+    skip: process.platform === "win32" ? "POSIX file permissions do not apply on Windows" : false
+}, async () => {
+    const { target, home } = await makeWorkspace();
+    try {
+        const result = await install(baseOptions(target, home));
+        assert.equal(result.ok, true, result.error || "");
+        assert.ok(result.backupFiles.length > 0, "install should produce backup files");
+        for (const backupPath of result.backupFiles) {
+            const fileStat = await stat(backupPath);
+            assert.equal(fileStat.mode & 0o777, 0o600, `backup file ${backupPath} mode should be 0o600`);
+            const dirStat = await stat(path.dirname(backupPath));
+            assert.equal(dirStat.mode & 0o777, 0o700, `backup directory ${path.dirname(backupPath)} mode should be 0o700`);
+        }
+    } finally {
+        await cleanup(target, home);
+    }
+});
+

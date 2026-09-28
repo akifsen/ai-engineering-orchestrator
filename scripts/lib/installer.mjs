@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { defaultNpmCi } from "./npm-ci.mjs";
 import { createHash } from "node:crypto";
-import { access, constants, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, constants, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,7 +56,65 @@ const BLOCK_LABELS = {
     AEO_CONFIG: ".codex/config.toml AEO config block"
 };
 
-const TRUST_NOTE = "Codex loads <project>/.codex/config.toml only when the project is trusted. AEO does not change trust. Trust the project in Codex if the project configuration does not appear. Codex CLI and Codex IDE share these configuration layers, which is why AEO does not edit ~/.codex/config.toml.";
+export const TRUST_NOTE = "Codex loads <project>/.codex/config.toml only when the project is trusted. AEO does not change trust. Trust the project in Codex if the project configuration does not appear. Codex CLI and Codex IDE share these configuration layers, which is why AEO does not edit ~/.codex/config.toml.";
+export const TRUST_NOTE_GLOBAL = "Codex CLI and Codex IDE share ~/.codex/config.toml across all projects. AEO does not change trust settings. Global configuration applies across projects regardless of individual project trust.";
+
+export function resolveLayout(options = {}) {
+    const isGlobal = Boolean(options.global);
+    const hasTarget = Boolean(options.target);
+    if ((isGlobal && hasTarget) || (!isGlobal && !hasTarget)) {
+        throw new Error("Pass either --target <project> or --global, not both.");
+    }
+    if (hasTarget && (typeof options.target !== "string" || options.target.trim() === "" || options.target.startsWith("--"))) {
+        throw new Error("Pass --target <project>.");
+    }
+    const home = path.resolve(options.homeDir || os.homedir());
+    const repoRoot = options.repoRoot ? path.resolve(options.repoRoot) : defaultRepoRoot();
+    if (isGlobal) {
+        const root = home;
+        const bridgeDir = path.join(root, ".aeo", "bridge", "antigravity-mcp");
+        return {
+            mode: "global",
+            root,
+            id: "global",
+            homeDir: home,
+            repoRoot,
+            agentsFile: path.join(root, ".codex", "AGENTS.md"),
+            codexConfigFile: path.join(root, ".codex", "config.toml"),
+            codexAgentsDir: path.join(root, ".codex", "agents"),
+            claudeRuleFile: path.join(root, ".claude", "rules", "aeo-orchestration.md"),
+            claudeAgentsDir: path.join(root, ".claude", "agents"),
+            claudeMcpFile: path.join(root, ".claude.json"),
+            claudeSettingsFile: path.join(root, ".claude", "settings.json"),
+            bridgeDir,
+            bridgeIndex: path.join(bridgeDir, "index.js"),
+            manifestFile: path.join(root, ".aeo", "global-install-manifest.json"),
+            backupDir: path.join(home, ".aeo", "backups", "global")
+        };
+    }
+    const target = path.resolve(options.target);
+    const root = target;
+    const id = projectId(root);
+    const bridgeDir = path.join(root, ".aeo", "bridge", "antigravity-mcp");
+    return {
+        mode: "project",
+        root,
+        id,
+        homeDir: home,
+        repoRoot,
+        agentsFile: path.join(root, "AGENTS.md"),
+        codexConfigFile: path.join(root, ".codex", "config.toml"),
+        codexAgentsDir: path.join(root, ".codex", "agents"),
+        claudeRuleFile: path.join(root, ".claude", "rules", "aeo-orchestration.md"),
+        claudeAgentsDir: path.join(root, ".claude", "agents"),
+        claudeMcpFile: path.join(root, ".mcp.json"),
+        claudeSettingsFile: path.join(root, ".claude", "settings.local.json"),
+        bridgeDir,
+        bridgeIndex: path.join(bridgeDir, "index.js"),
+        manifestFile: path.join(root, ".aeo", "install-manifest.json"),
+        backupDir: path.join(home, ".aeo", "backups", id)
+    };
+}
 
 export function projectId(target) {
     return createHash("sha256").update(path.resolve(target)).digest("hex").slice(0, 16);
@@ -297,6 +355,9 @@ export function classifyOwned({ current, preset, owned, lastHash, force }) {
     if (currentHash === presetHash) {
         return { action: "unchanged", presetHash, currentHash, lastHash: lastHash || null };
     }
+    if (normalizeLineEndings(current) === normalizeLineEndings(preset)) {
+        return { action: "unchanged", presetHash, currentHash, lastHash: lastHash || null };
+    }
     if (lastHash && currentHash === lastHash) {
         return { action: "safe-update", presetHash, currentHash, lastHash };
     }
@@ -308,8 +369,17 @@ export function classifyOwned({ current, preset, owned, lastHash, force }) {
     };
 }
 
-function unownedFileConflict(relative) {
-    return `An AEO-namespaced file already exists at ${relative}, but this installation cannot prove that AEO owns it. AEO does not own it. Matching content is not sufficient ownership evidence. The file was preserved.`;
+function unownedFileConflict(relative, isGlobal = false, adopt = false) {
+    const hint = (isGlobal && !adopt) ? " Pass --adopt to claim it." : "";
+    return `An AEO-namespaced file already exists at ${relative}, but this installation cannot prove that AEO owns it. AEO does not own it. Matching content is not sufficient ownership evidence. The file was preserved.${hint}`;
+}
+
+function normalizeLineEndings(content) {
+    if (content === null || content === undefined) {
+        return "";
+    }
+    const str = Buffer.isBuffer(content) ? content.toString("utf8") : String(content);
+    return str.replace(/\r\n/g, "\n");
 }
 
 function blockOwned(manifest, file, id) {
@@ -372,13 +442,14 @@ function classifyBlock({ currentText, begin, end, body, lastHash, owned, force }
 function assertInside(root, file) {
     const relative = path.relative(root, file);
     if (relative.startsWith("..") || path.isAbsolute(relative)) {
-        throw new Error(`Refusing to write outside the target project: ${file}`);
+        throw new Error(`Refusing to write outside the target: ${file}`);
     }
 }
 
 export function codexConfigBlock(bridgeIndex, target) {
     const bridge = toPosix(bridgeIndex);
-    const agent = (name) => toPosix(path.join(target, ".codex", "agents", name));
+    const isAgentsDir = target.endsWith("/agents") || target.endsWith("\\agents") || target.endsWith(".codex/agents") || target.endsWith(".codex\\agents");
+    const agent = (name) => toPosix(isAgentsDir ? path.join(target, name) : path.join(target, ".codex", "agents", name));
     const sections = [
         "# AEO-owned project config. It does not set model, effort, sandbox, approval, or trust.",
         "",
@@ -423,8 +494,10 @@ function presetPaths(repoRoot) {
     };
 }
 
-async function loadManifest(target) {
-    const file = path.join(target, ".aeo", "install-manifest.json");
+async function loadManifest(targetOrLayout) {
+    const file = typeof targetOrLayout === "string"
+        ? path.join(targetOrLayout, ".aeo", "install-manifest.json")
+        : targetOrLayout.manifestFile;
     const text = await readText(file);
     if (text === null) {
         return null;
@@ -432,31 +505,36 @@ async function loadManifest(target) {
     return JSON.parse(text);
 }
 
-async function ownedPresetFiles(presets, options) {
+async function ownedPresetFiles(presets, options, layout = null) {
+    const root = layout?.root;
     const items = [{ relative: GITIGNORE_RELATIVE, preset: Buffer.from(GITIGNORE_TEXT) }];
     if (options.codex) {
         for (const [fileName] of CODEX_AGENTS) {
+            const agentRel = root ? toPosix(path.relative(root, path.join(layout.codexAgentsDir, fileName))) : toPosix(path.join(".codex", "agents", fileName));
             items.push({
-                relative: toPosix(path.join(".codex", "agents", fileName)),
+                relative: agentRel,
                 preset: await readFile(path.join(presets.codexAgents, fileName))
             });
         }
     }
     if (options.claude) {
+        const ruleRel = root ? toPosix(path.relative(root, layout.claudeRuleFile)) : ".claude/rules/aeo-orchestration.md";
         items.push({
-            relative: ".claude/rules/aeo-orchestration.md",
+            relative: ruleRel,
             preset: await readFile(presets.claudeRule)
         });
         for (const fileName of CLAUDE_AGENTS) {
+            const claudeRel = root ? toPosix(path.relative(root, path.join(layout.claudeAgentsDir, fileName))) : toPosix(path.join(".claude", "agents", fileName));
             items.push({
-                relative: toPosix(path.join(".claude", "agents", fileName)),
+                relative: claudeRel,
                 preset: await readFile(path.join(presets.claudeAgents, fileName))
             });
         }
     }
     for (const fileName of BRIDGE_FILES) {
+        const bridgeRel = root ? toPosix(path.relative(root, path.join(layout.bridgeDir, fileName))) : `${BRIDGE_DIR}/${toPosix(fileName)}`;
         items.push({
-            relative: `${BRIDGE_DIR}/${toPosix(fileName)}`,
+            relative: bridgeRel,
             preset: await readFile(path.join(presets.bridge, fileName))
         });
     }
@@ -492,22 +570,26 @@ function noteManagedPlan(decision, label, relative, buckets) {
         buckets.backups.push(relative);
         return;
     }
+    const isAgents = relative === "AGENTS.md" || relative === ".codex/AGENTS.md";
+    const agentsLabel = `${relative} orchestration block`;
+    const configLabel = `${relative} AEO block`;
+
     if (decision.kind === "safe-update") {
         buckets.safeUpdate.push(label);
         buckets.backups.push(relative);
-        buckets.merge.push(relative === "AGENTS.md"
-            ? "AGENTS.md orchestration block (update interior only)"
-            : ".codex/config.toml AEO block");
+        buckets.merge.push(isAgents
+            ? `${agentsLabel} (update interior only)`
+            : configLabel);
         return;
     }
     if (decision.action === "write") {
         buckets.merge.push(decision.planned.state === "present"
-            ? (relative === "AGENTS.md"
-                ? "AGENTS.md orchestration block (update interior only)"
-                : ".codex/config.toml AEO block")
-            : (relative === "AGENTS.md"
-                ? "AGENTS.md orchestration block"
-                : ".codex/config.toml AEO block"));
+            ? (isAgents
+                ? `${agentsLabel} (update interior only)`
+                : configLabel)
+            : (isAgents
+                ? agentsLabel
+                : configLabel));
         buckets.backups.push(relative);
         return;
     }
@@ -515,26 +597,37 @@ function noteManagedPlan(decision, label, relative, buckets) {
 }
 
 export async function planInstall(options) {
-    const target = path.resolve(options.target);
-    const repoRoot = options.repoRoot || defaultRepoRoot();
+    const layout = options.layout || resolveLayout(options);
+    const target = layout.root;
+    const repoRoot = layout.repoRoot;
     const presets = presetPaths(repoRoot);
     const info = await stat(target);
     if (!info.isDirectory()) {
-        throw new Error(`Target is not a directory: ${target}`);
+        throw new Error(`${layout.mode === "global" ? "Home" : "Target"} is not a directory: ${target}`);
     }
     if (!options.codex && !options.claude) {
         throw new Error("Pass --codex, --claude, or both. AEO does not guess which tools to configure.");
     }
+    if (options.replaceCodexAgentsMd && (!options.global || layout.mode !== "global")) {
+        throw new Error("--replace-codex-agents-md can only be used with --global install or update.");
+    }
+    if (options.adopt && (!options.global || layout.mode !== "global")) {
+        throw new Error("--adopt can only be used with --global install.");
+    }
 
-    const manifest = await loadManifest(target);
+    const manifest = await loadManifest(layout);
     if (manifest && manifest.schemaVersion !== 1 && manifest.schemaVersion !== SCHEMA_VERSION) {
         throw new Error("Unsupported AEO manifest schema. Installation stopped.");
     }
-    if (manifest && manifest.projectId && manifest.projectId !== projectId(target)) {
+    if (manifest && manifest.projectId && manifest.projectId !== layout.id) {
         throw new Error("The AEO manifest belongs to a different project path. Installation stopped.");
     }
-    const bridgeIndex = path.join(target, ".aeo", "bridge", "antigravity-mcp", "index.js");
+    const bridgeIndex = layout.bridgeIndex;
     const force = Boolean(options.forceManagedUpdate);
+    const isGlobal = layout.mode === "global";
+    const replaceCodexAgentsMd = Boolean(isGlobal && options.replaceCodexAgentsMd);
+    const adopt = Boolean(isGlobal && options.adopt);
+
     const conflicts = [];
     const create = [];
     const preserve = [];
@@ -548,137 +641,229 @@ export async function planInstall(options) {
     const recreate = [];
     const ownershipUnknown = [];
     const unownedFiles = [];
+    const adopted = [];
     const buckets = { merge, backups, unchanged, safeUpdate, userModified, forceOverwrite };
 
     if (options.codex) {
-        const agentsFile = path.join(target, "AGENTS.md");
-        const agentsText = await readText(agentsFile);
+        const relativeAgents = toPosix(path.relative(layout.root, layout.agentsFile));
+        const agentsFile = layout.agentsFile;
         const agentsBody = await readFile(presets.codexBlock, "utf8");
-        const agentsRecord = blockRecord(manifest, "AGENTS.md", "AEO_ORCHESTRATION");
-        const agentsDecision = classifyBlock({
-            currentText: agentsText,
-            begin: AGENTS_BEGIN,
-            end: AGENTS_END,
-            body: agentsBody,
-            lastHash: agentsRecord?.sha256 || null,
-            owned: blockOwned(manifest, "AGENTS.md", "AEO_ORCHESTRATION"),
-            force
-        });
-        if (agentsDecision.action === "malformed") {
-            conflicts.push("AGENTS.md has partial or repeated AEO markers. Installation stopped.");
-        } else if (agentsDecision.action === "collision") {
-            ownershipUnknown.push(BLOCK_LABELS.AEO_ORCHESTRATION);
-            conflicts.push(unprovenOwnershipConflict("AGENTS.md", "an AEO orchestration block"));
-        } else if (agentsText === null) {
-            create.push("AGENTS.md");
-            merge.push("AGENTS.md orchestration block");
+
+        const isAgentsWholeFile = isGlobal && (replaceCodexAgentsMd || manifestOwnsFile(manifest, relativeAgents));
+
+        if (isAgentsWholeFile) {
+            const currentBytes = await readBytes(agentsFile);
+            const presetBytes = Buffer.from(agentsBody, "utf8");
+            const isOwned = manifestOwnsFile(manifest, relativeAgents);
+            const lastHash = lastInstalledHash(manifest, relativeAgents);
+            if (currentBytes === null) {
+                if (isOwned) {
+                    recreate.push(relativeAgents);
+                } else {
+                    create.push(relativeAgents);
+                }
+            } else if (!isOwned) {
+                if (sha256Hex(currentBytes) === sha256Hex(presetBytes) || normalizeLineEndings(currentBytes) === normalizeLineEndings(presetBytes)) {
+                    unchanged.push(relativeAgents);
+                } else {
+                    backups.push(relativeAgents);
+                    safeUpdate.push(relativeAgents);
+                }
+            } else {
+                const decision = classifyOwned({
+                    current: currentBytes,
+                    preset: presetBytes,
+                    owned: true,
+                    lastHash,
+                    force
+                });
+                if (decision.action === "unchanged") {
+                    unchanged.push(relativeAgents);
+                } else if (decision.action === "safe-update") {
+                    safeUpdate.push(relativeAgents);
+                } else if (decision.action === "force") {
+                    forceOverwrite.push(relativeAgents);
+                    backups.push(relativeAgents);
+                } else if (decision.action === "preserve-drift") {
+                    userModified.push(relativeAgents);
+                } else if (decision.action === "recreate") {
+                    recreate.push(relativeAgents);
+                }
+            }
         } else {
-            preserve.push("AGENTS.md");
-            noteManagedPlan(agentsDecision, BLOCK_LABELS.AEO_ORCHESTRATION, "AGENTS.md", buckets);
+            const agentsText = await readText(agentsFile);
+            const agentsRecord = blockRecord(manifest, relativeAgents, "AEO_ORCHESTRATION");
+            const agentsDecision = classifyBlock({
+                currentText: agentsText,
+                begin: AGENTS_BEGIN,
+                end: AGENTS_END,
+                body: agentsBody,
+                lastHash: agentsRecord?.sha256 || null,
+                owned: blockOwned(manifest, relativeAgents, "AEO_ORCHESTRATION"),
+                force
+            });
+            if (agentsDecision.action === "malformed") {
+                conflicts.push(`${relativeAgents} has partial or repeated AEO markers. Installation stopped.`);
+            } else if (agentsDecision.action === "collision") {
+                ownershipUnknown.push(BLOCK_LABELS.AEO_ORCHESTRATION);
+                conflicts.push(unprovenOwnershipConflict(relativeAgents, "an AEO orchestration block"));
+            } else if (agentsText === null) {
+                create.push(relativeAgents);
+                merge.push(`${relativeAgents} orchestration block`);
+            } else {
+                preserve.push(relativeAgents);
+                noteManagedPlan(agentsDecision, BLOCK_LABELS.AEO_ORCHESTRATION, relativeAgents, buckets);
+            }
         }
 
-        const configFile = path.join(target, ".codex", "config.toml");
+        const configFile = layout.codexConfigFile;
+        const relativeConfig = toPosix(path.relative(layout.root, configFile));
         const configText = await readText(configFile);
-        const configBody = codexConfigBlock(bridgeIndex, target);
-        const configRecord = blockRecord(manifest, ".codex/config.toml", "AEO_CONFIG");
+        const configBody = codexConfigBlock(bridgeIndex, layout.root);
+        const configRecord = blockRecord(manifest, relativeConfig, "AEO_CONFIG");
         const configDecision = classifyBlock({
             currentText: configText,
             begin: CONFIG_BEGIN,
             end: CONFIG_END,
             body: configBody,
             lastHash: configRecord?.sha256 || null,
-            owned: blockOwned(manifest, ".codex/config.toml", "AEO_CONFIG"),
+            owned: blockOwned(manifest, relativeConfig, "AEO_CONFIG"),
             force
         });
         if (configText !== null) {
             const found = collisionTables(configText);
             if (found.malformed || configDecision.action === "malformed") {
-                conflicts.push(".codex/config.toml has partial or repeated AEO markers. Installation stopped.");
+                conflicts.push(`${relativeConfig} has partial or repeated AEO markers. Installation stopped.`);
             } else if (found.tables.length > 0) {
                 conflicts.push(`AEO table already exists outside the managed block: ${found.tables.join(", ")}. Installation stopped.`);
             } else if (configDecision.action === "collision") {
                 ownershipUnknown.push(BLOCK_LABELS.AEO_CONFIG);
-                conflicts.push(unprovenOwnershipConflict(".codex/config.toml", "an AEO managed configuration block"));
+                conflicts.push(unprovenOwnershipConflict(relativeConfig, "an AEO managed configuration block"));
             } else {
-                preserve.push(".codex/config.toml");
-                noteManagedPlan(configDecision, BLOCK_LABELS.AEO_CONFIG, ".codex/config.toml", buckets);
+                preserve.push(relativeConfig);
+                noteManagedPlan(configDecision, BLOCK_LABELS.AEO_CONFIG, relativeConfig, buckets);
             }
         } else {
-            create.push(".codex/config.toml");
-            merge.push(".codex/config.toml AEO block");
+            create.push(relativeConfig);
+            merge.push(`${relativeConfig} AEO block`);
         }
-        notes.push(TRUST_NOTE);
+        notes.push(isGlobal ? TRUST_NOTE_GLOBAL : TRUST_NOTE);
     }
 
     if (options.claude) {
-        const claudeFile = path.join(target, "CLAUDE.md");
+        const claudeFile = isGlobal ? path.join(layout.root, ".claude", "CLAUDE.md") : path.join(layout.root, "CLAUDE.md");
+        const relativeClaude = toPosix(path.relative(layout.root, claudeFile));
         if (await exists(claudeFile)) {
-            preserve.push("CLAUDE.md");
+            preserve.push(relativeClaude);
         }
 
-        const mcpFile = path.join(target, ".mcp.json");
+        const mcpFile = layout.claudeMcpFile;
+        const relativeMcp = toPosix(path.relative(layout.root, mcpFile));
         const mcpText = await readText(mcpFile);
         if (mcpText === null) {
-            create.push(".mcp.json");
-            merge.push(".mcp.json mcpServers.aeo-antigravity");
+            create.push(relativeMcp);
+            merge.push(`${relativeMcp} mcpServers.aeo-antigravity`);
         } else {
             let parsed;
             try {
                 parsed = JSON.parse(mcpText);
             } catch {
-                conflicts.push(".mcp.json is not valid JSON. Installation stopped.");
+                conflicts.push(`${relativeMcp} is not valid JSON. Installation stopped.`);
                 parsed = null;
             }
             if (parsed) {
                 if (parsed.mcpServers !== undefined && (typeof parsed.mcpServers !== "object" || parsed.mcpServers === null || Array.isArray(parsed.mcpServers))) {
-                    conflicts.push(".mcp.json mcpServers is not an object. Installation stopped.");
+                    conflicts.push(`${relativeMcp} mcpServers is not an object. Installation stopped.`);
                 } else {
                     const servers = parsed.mcpServers || {};
                     const entry = mcpEntry(bridgeIndex);
-                    if (Object.hasOwn(servers, MCP_ID) && !owns(manifest, ".mcp.json", "mcpServers.aeo-antigravity")) {
-                        conflicts.push(".mcp.json already has mcpServers.aeo-antigravity and AEO does not own it. Installation stopped.");
-                    } else if (!Object.hasOwn(servers, MCP_ID) || JSON.stringify(servers[MCP_ID]) !== JSON.stringify(entry)) {
-                        preserve.push(".mcp.json");
-                        backups.push(".mcp.json");
-                        merge.push(".mcp.json mcpServers.aeo-antigravity");
+                    const alreadyPresent = Object.hasOwn(servers, MCP_ID);
+                    const isOwned = owns(manifest, relativeMcp, "mcpServers.aeo-antigravity");
+                    if (alreadyPresent && !isOwned) {
+                        const existingServer = servers[MCP_ID];
+                        const argsMatch = Array.isArray(existingServer?.args) &&
+                            existingServer.args.length === 1 &&
+                            toPosix(existingServer.args[0]) === toPosix(entry.args[0]);
+                        const commandMatch = existingServer?.command === entry.command;
+                        const canAdopt = Boolean(adopt && commandMatch && argsMatch);
+                        if (canAdopt) {
+                            adopted.push(`${relativeMcp} mcpServers.aeo-antigravity`);
+                        } else if (adopt) {
+                            conflicts.push(`${relativeMcp} already has mcpServers.aeo-antigravity and AEO does not own it. It cannot be adopted because command/args differ from what AEO would write. Installation stopped.`);
+                        } else {
+                            const hint = isGlobal ? " Pass --adopt to claim it." : "";
+                            conflicts.push(`${relativeMcp} already has mcpServers.aeo-antigravity and AEO does not own it.${hint} Installation stopped.`);
+                        }
+                    } else if (isOwned) {
+                        if (servers[MCP_ID]?.env) {
+                            entry.env = servers[MCP_ID].env;
+                        }
+                        if (JSON.stringify(servers[MCP_ID]) !== JSON.stringify(entry)) {
+                            preserve.push(relativeMcp);
+                            backups.push(relativeMcp);
+                            merge.push(`${relativeMcp} mcpServers.aeo-antigravity`);
+                        } else {
+                            preserve.push(relativeMcp);
+                        }
+                    } else if (!alreadyPresent) {
+                        preserve.push(relativeMcp);
+                        backups.push(relativeMcp);
+                        merge.push(`${relativeMcp} mcpServers.aeo-antigravity`);
                     } else {
-                        preserve.push(".mcp.json");
+                        preserve.push(relativeMcp);
                     }
                 }
             }
         }
 
-        const settingsFile = path.join(target, ".claude", "settings.local.json");
+        const settingsFile = layout.claudeSettingsFile;
+        const relativeSettings = toPosix(path.relative(layout.root, settingsFile));
         const settingsText = await readText(settingsFile);
         if (settingsText === null) {
-            create.push(".claude/settings.local.json");
-            merge.push(".claude/settings.local.json AEO permission");
+            create.push(relativeSettings);
+            merge.push(`${relativeSettings} AEO permission`);
         } else {
             try {
                 const parsed = JSON.parse(settingsText);
                 const allow = parsed?.permissions?.allow;
                 if (allow !== undefined && !Array.isArray(allow)) {
-                    conflicts.push(".claude/settings.local.json permissions.allow is not an array. Installation stopped.");
+                    conflicts.push(`${relativeSettings} permissions.allow is not an array. Installation stopped.`);
                 } else if (Array.isArray(allow) && allow.includes(PERMISSION)) {
-                    preserve.push(".claude/settings.local.json");
+                    const isOwned = owns(manifest, relativeSettings, "permissions.allow");
+                    if (!isOwned && adopt) {
+                        adopted.push(`${relativeSettings} AEO permission`);
+                    }
+                    preserve.push(relativeSettings);
                 } else {
-                    preserve.push(".claude/settings.local.json");
-                    backups.push(".claude/settings.local.json");
-                    merge.push(".claude/settings.local.json AEO permission");
+                    preserve.push(relativeSettings);
+                    backups.push(relativeSettings);
+                    merge.push(`${relativeSettings} AEO permission`);
                 }
             } catch {
-                conflicts.push(".claude/settings.local.json is not valid JSON. Installation stopped.");
+                conflicts.push(`${relativeSettings} is not valid JSON. Installation stopped.`);
             }
         }
     }
 
-    for (const item of await ownedPresetFiles(presets, options)) {
-        const current = await readBytes(path.join(target, item.relative));
+    for (const item of await ownedPresetFiles(presets, options, layout)) {
+        const current = await readBytes(path.join(layout.root, item.relative));
+        const isOwned = manifestOwnsFile(manifest, item.relative);
+        const lastHash = lastInstalledHash(manifest, item.relative);
+        if (current !== null && !isOwned) {
+            if (adopt && normalizeLineEndings(current) === normalizeLineEndings(item.preset)) {
+                adopted.push(item.relative);
+                backups.push(item.relative);
+            } else {
+                unownedFiles.push(item.relative);
+                conflicts.push(unownedFileConflict(item.relative, isGlobal, adopt));
+            }
+            continue;
+        }
         const decision = classifyOwned({
             current,
             preset: item.preset,
-            owned: manifestOwnsFile(manifest, item.relative),
-            lastHash: lastInstalledHash(manifest, item.relative),
+            owned: isOwned,
+            lastHash,
             force
         });
         if (decision.action === "create") {
@@ -696,11 +881,12 @@ export async function planInstall(options) {
             userModified.push(item.relative);
         } else if (decision.action === "conflict") {
             unownedFiles.push(item.relative);
-            conflicts.push(unownedFileConflict(item.relative));
+            conflicts.push(unownedFileConflict(item.relative, isGlobal, adopt));
         }
     }
 
     return {
+        layout,
         target,
         bridgeIndex,
         presets,
@@ -719,23 +905,55 @@ export async function planInstall(options) {
         recreate,
         ownershipUnknown,
         unownedFiles,
+        adopted,
         forceManagedUpdate: force,
         warnings: [],
         notes
     };
 }
 
+async function safeChmod(targetPath, mode) {
+    try {
+        await chmod(targetPath, mode);
+    } catch {
+        // Best effort; ignore chmod errors on win32
+    }
+}
+
 async function backupFile(homeDir, id, stamp, target, relative) {
     const source = path.join(target, relative);
     const destination = path.join(homeDir, ".aeo", "backups", id, stamp, relative);
-    await mkdir(path.dirname(destination), { recursive: true });
-    await writeFile(destination, await readFile(source));
+    const destDir = path.dirname(destination);
+    await mkdir(destDir, { recursive: true, mode: 0o700 });
+    await writeFile(destination, await readFile(source), { mode: 0o600 });
+    await safeChmod(destination, 0o600);
+
+    const backupsRoot = path.join(homeDir, ".aeo", "backups");
+    const idDir = path.join(backupsRoot, id);
+    const stampDir = path.join(idDir, stamp);
+
+    const dirs = new Set([backupsRoot, idDir, stampDir, destDir]);
+    let current = destDir;
+    while (current.length > backupsRoot.length && current.startsWith(backupsRoot)) {
+        dirs.add(current);
+        const parent = path.dirname(current);
+        if (parent === current) {
+            break;
+        }
+        current = parent;
+    }
+    const sortedDirs = [...dirs].sort((a, b) => a.length - b.length);
+    for (const dir of sortedDirs) {
+        await safeChmod(dir, 0o700);
+    }
+
     return destination;
 }
 
 export { defaultNpmCi };
 
 async function applyOwned({
+    layout,
     target,
     relative,
     preset,
@@ -746,21 +964,32 @@ async function applyOwned({
     when,
     backupFiles,
     changed,
-    writeImpl
+    writeImpl,
+    adopt,
+    adopted
 }) {
     const file = path.join(target, relative);
     assertInside(target, file);
     const posix = toPosix(relative);
     const current = await readBytes(file);
+    const isOwned = manifestOwnsFile(manifest, posix);
+    const lastHash = lastInstalledHash(manifest, posix);
+
+    if (adopt && !isOwned && current !== null && normalizeLineEndings(current) === normalizeLineEndings(preset)) {
+        backupFiles.push(await backupFile(homeDir, id, when, target, posix));
+        adopted?.push(posix);
+        return { path: posix, sha256: sha256Hex(current), wrote: false };
+    }
+
     const decision = classifyOwned({
         current,
         preset,
-        owned: manifestOwnsFile(manifest, posix),
-        lastHash: lastInstalledHash(manifest, posix),
+        owned: isOwned,
+        lastHash,
         force
     });
     if (decision.action === "conflict") {
-        throw new Error(unownedFileConflict(posix));
+        throw new Error(unownedFileConflict(posix, layout?.mode === "global", adopt));
     }
     if (decision.action === "preserve-drift") {
         return { path: posix, sha256: decision.lastHash || undefined, wrote: false };
@@ -806,7 +1035,8 @@ function stamp() {
 }
 
 export async function install(options) {
-    const plan = await planInstall(options);
+    const layout = options.layout || resolveLayout(options);
+    const plan = await planInstall({ ...options, layout });
     const dryRun = Boolean(options.dryRun);
     if (plan.conflicts.length > 0) {
         return { ok: false, dryRun, wrote: false, ...plan, changed: [], backupFiles: [], warnings: [] };
@@ -815,18 +1045,24 @@ export async function install(options) {
         return { ok: true, dryRun: true, wrote: false, ...plan, changed: [], backupFiles: [], warnings: [] };
     }
 
-    const homeDir = options.homeDir || os.homedir();
+    const homeDir = layout.homeDir;
     const npmCi = options.npmCi || defaultNpmCi;
     const writeImpl = options.writeFile || null;
-    const id = projectId(plan.target);
+    const id = layout.id;
     const when = stamp();
     const changed = [];
     const backupFiles = [];
     const warnings = [];
     const created = new Set(plan.manifest?.createdFiles || []);
     const force = Boolean(options.forceManagedUpdate);
+    const isGlobal = layout.mode === "global";
+    const replaceCodexAgentsMd = Boolean(isGlobal && options.replaceCodexAgentsMd);
+    const adopt = Boolean(isGlobal && options.adopt);
+    const adopted = [];
+
     const ownedContext = {
-        target: plan.target,
+        layout,
+        target: layout.root,
         manifest: plan.manifest,
         force,
         homeDir,
@@ -835,17 +1071,19 @@ export async function install(options) {
         backupFiles,
         changed,
         writeImpl,
-        bridgeIndex: plan.bridgeIndex
+        bridgeIndex: layout.bridgeIndex,
+        adopt,
+        adopted
     };
-    const ownedItems = await ownedPresetFiles(plan.presets, options);
+    const ownedItems = await ownedPresetFiles(plan.presets, options, layout);
     const bridgeItems = ownedItems.filter((item) => item.relative.startsWith(`${BRIDGE_DIR}/`));
     const otherItems = ownedItems.filter((item) => !item.relative.startsWith(`${BRIDGE_DIR}/`));
     let bridgeEntries = [];
     try {
         bridgeEntries = await deployBridge(bridgeItems, ownedContext, npmCi);
     } catch (error) {
-        if (await exists(plan.bridgeIndex)) {
-            changed.push(".aeo/bridge/antigravity-mcp");
+        if (await exists(layout.bridgeIndex)) {
+            changed.push(BRIDGE_DIR);
         }
         const detail = error instanceof Error ? error.message : String(error);
         const recovery = plan.manifest
@@ -869,31 +1107,90 @@ export async function install(options) {
     const blocks = [];
     try {
         if (options.codex) {
-            const block = await readFile(plan.presets.codexBlock, "utf8");
+            const relativeAgents = toPosix(path.relative(layout.root, layout.agentsFile));
+            const agentsPreset = await readFile(plan.presets.codexBlock);
+            const isAgentsWholeFile = isGlobal && (replaceCodexAgentsMd || manifestOwnsFile(plan.manifest, relativeAgents));
+            if (isAgentsWholeFile) {
+                const currentBytes = await readBytes(layout.agentsFile);
+                const isOwned = manifestOwnsFile(plan.manifest, relativeAgents);
+                const lastHash = lastInstalledHash(plan.manifest, relativeAgents);
+                if (currentBytes === null) {
+                    await writeAtomic(layout.agentsFile, agentsPreset, writeImpl);
+                    changed.push(relativeAgents);
+                    const written = await readBytes(layout.agentsFile);
+                    installed.push({ path: relativeAgents, sha256: sha256Hex(written) });
+                } else if (!isOwned) {
+                    if (sha256Hex(currentBytes) === sha256Hex(agentsPreset) || normalizeLineEndings(currentBytes) === normalizeLineEndings(agentsPreset)) {
+                        installed.push({ path: relativeAgents, sha256: sha256Hex(currentBytes) });
+                    } else {
+                        const backupDest = await backupFile(homeDir, id, when, layout.root, relativeAgents);
+                        backupFiles.push(backupDest);
+                        const noteText = `Original ${relativeAgents} was backed up to ${backupDest}. Uninstall deletes ${relativeAgents} if unchanged but does not restore the original.`;
+                        if (!plan.notes.includes(noteText)) {
+                            plan.notes.push(noteText);
+                        }
+                        await writeAtomic(layout.agentsFile, agentsPreset, writeImpl);
+                        changed.push(relativeAgents);
+                        const written = await readBytes(layout.agentsFile);
+                        installed.push({ path: relativeAgents, sha256: sha256Hex(written) });
+                    }
+                } else {
+                    const decision = classifyOwned({
+                        current: currentBytes,
+                        preset: agentsPreset,
+                        owned: true,
+                        lastHash,
+                        force
+                    });
+                    if (decision.action === "unchanged") {
+                        installed.push({ path: relativeAgents, sha256: decision.currentHash });
+                    } else if (decision.action === "preserve-drift") {
+                        installed.push({ path: relativeAgents, sha256: decision.lastHash || lastHash });
+                    } else if (decision.action === "force") {
+                        const backupDest = await backupFile(homeDir, id, when, layout.root, relativeAgents);
+                        backupFiles.push(backupDest);
+                        await writeAtomic(layout.agentsFile, agentsPreset, writeImpl);
+                        changed.push(relativeAgents);
+                        const written = await readBytes(layout.agentsFile);
+                        installed.push({ path: relativeAgents, sha256: sha256Hex(written) });
+                    } else if (decision.action === "safe-update" || decision.action === "recreate") {
+                        await writeAtomic(layout.agentsFile, agentsPreset, writeImpl);
+                        changed.push(relativeAgents);
+                        const written = await readBytes(layout.agentsFile);
+                        installed.push({ path: relativeAgents, sha256: sha256Hex(written) });
+                    }
+                }
+            } else {
+                const block = agentsPreset.toString("utf8");
+                blocks.push(await applyTextMerge({
+                    layout,
+                    target: layout.root,
+                    relative: relativeAgents,
+                    begin: AGENTS_BEGIN,
+                    end: AGENTS_END,
+                    blockId: "AEO_ORCHESTRATION",
+                    body: block,
+                    manifest: plan.manifest,
+                    force,
+                    homeDir,
+                    id,
+                    when,
+                    backupFiles,
+                    changed,
+                    created,
+                    writeImpl
+                }));
+            }
+
+            const relativeConfig = toPosix(path.relative(layout.root, layout.codexConfigFile));
             blocks.push(await applyTextMerge({
-                target: plan.target,
-                relative: "AGENTS.md",
-                begin: AGENTS_BEGIN,
-                end: AGENTS_END,
-                blockId: "AEO_ORCHESTRATION",
-                body: block,
-                manifest: plan.manifest,
-                force,
-                homeDir,
-                id,
-                when,
-                backupFiles,
-                changed,
-                created,
-                writeImpl
-            }));
-            blocks.push(await applyTextMerge({
-                target: plan.target,
-                relative: path.join(".codex", "config.toml"),
+                layout,
+                target: layout.root,
+                relative: relativeConfig,
                 begin: CONFIG_BEGIN,
                 end: CONFIG_END,
                 blockId: "AEO_CONFIG",
-                body: codexConfigBlock(plan.bridgeIndex, plan.target),
+                body: codexConfigBlock(layout.bridgeIndex, layout.root),
                 manifest: plan.manifest,
                 force,
                 homeDir,
@@ -912,8 +1209,9 @@ export async function install(options) {
 
         if (options.claude) {
             claimMcp = await mergeMcp({
-                target: plan.target,
-                bridgeIndex: plan.bridgeIndex,
+                layout,
+                target: layout.root,
+                bridgeIndex: layout.bridgeIndex,
                 manifest: plan.manifest,
                 homeDir,
                 id,
@@ -922,10 +1220,13 @@ export async function install(options) {
                 changed,
                 created,
                 warnings,
+                adopt,
+                adopted,
                 writeImpl
             });
             claimPermission = await mergePermission({
-                target: plan.target,
+                layout,
+                target: layout.root,
                 manifest: plan.manifest,
                 homeDir,
                 id,
@@ -934,6 +1235,8 @@ export async function install(options) {
                 changed,
                 created,
                 warnings,
+                adopt,
+                adopted,
                 writeImpl
             });
         }
@@ -946,14 +1249,16 @@ export async function install(options) {
             claimMcp,
             claimPermission,
             installed,
-            blocks
+            blocks,
+            layout
         }));
-        const manifestPath = path.join(plan.target, ".aeo", "install-manifest.json");
+        const manifestPath = layout.manifestFile;
+        const relativeManifest = toPosix(path.relative(layout.root, manifestPath));
         const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
         if (await readText(manifestPath) !== manifestText) {
             try {
                 await writeAtomic(manifestPath, manifestText, writeImpl);
-                changed.push(".aeo/install-manifest.json");
+                changed.push(relativeManifest);
             } catch (error) {
                 const detail = error instanceof Error ? error.message : String(error);
                 const recovery = plan.manifest
@@ -968,7 +1273,7 @@ export async function install(options) {
                     backupFiles,
                     warnings,
                     manifest,
-                    error: `Installation is incomplete. Some AEO files may already have been copied, but .aeo/install-manifest.json was not saved. ${recovery} Backups, if any, were not restored automatically. ${detail}`
+                    error: `Installation is incomplete. Some AEO files may already have been copied, but ${relativeManifest} was not saved. ${recovery} Backups, if any, were not restored automatically. ${detail}`
                 };
             }
         }
@@ -980,7 +1285,8 @@ export async function install(options) {
             changed,
             backupFiles,
             warnings,
-            manifest
+            manifest,
+            adopted
         };
     } catch (error) {
         return {
@@ -1054,6 +1360,7 @@ async function applyTextMerge({
 }
 
 async function mergeMcp({
+    layout,
     target,
     bridgeIndex,
     manifest,
@@ -1064,10 +1371,12 @@ async function mergeMcp({
     changed,
     created,
     warnings,
+    adopt,
+    adopted,
     writeImpl
 }) {
-    const relative = ".mcp.json";
-    const file = path.join(target, relative);
+    const file = layout ? layout.claudeMcpFile : path.join(target, ".mcp.json");
+    const relative = layout ? toPosix(path.relative(layout.root, file)) : ".mcp.json";
     const current = await readText(file);
     const entry = mcpEntry(bridgeIndex);
     let parsed = { mcpServers: {} };
@@ -1076,13 +1385,41 @@ async function mergeMcp({
         if (!parsed.mcpServers || typeof parsed.mcpServers !== "object" || Array.isArray(parsed.mcpServers)) {
             parsed.mcpServers = {};
         }
-        if (Object.hasOwn(parsed.mcpServers, MCP_ID) && !owns(manifest, relative, "mcpServers.aeo-antigravity")) {
-            throw new Error("Refusing to overwrite an unowned aeo-antigravity MCP server.");
+        const alreadyPresent = Object.hasOwn(parsed.mcpServers, MCP_ID);
+        const isOwned = owns(manifest, relative, "mcpServers.aeo-antigravity");
+        if (alreadyPresent && !isOwned) {
+            const existingServer = parsed.mcpServers[MCP_ID];
+            const argsMatch = Array.isArray(existingServer?.args) &&
+                existingServer.args.length === 1 &&
+                toPosix(existingServer.args[0]) === toPosix(entry.args[0]);
+            const commandMatch = existingServer?.command === entry.command;
+            if (adopt && commandMatch && argsMatch) {
+                if (existingServer.env) {
+                    entry.env = existingServer.env;
+                }
+                parsed.mcpServers[MCP_ID] = entry;
+                adopted?.push(`${relative} mcpServers.aeo-antigravity`);
+                const next = `${JSON.stringify(parsed, null, 2)}\n`;
+                if (next !== current) {
+                    backupFiles.push(await backupFile(homeDir, id, when, layout ? layout.root : target, relative));
+                    await writeAtomic(file, next, writeImpl);
+                    changed.push(relative);
+                }
+                return true;
+            }
+            if (adopt) {
+                throw new Error("Refusing to overwrite an unowned aeo-antigravity MCP server. It cannot be adopted because command/args differ from what AEO would write.");
+            }
+            const hint = (layout?.mode === "global") ? " Pass --adopt to claim it." : "";
+            throw new Error(`Refusing to overwrite an unowned aeo-antigravity MCP server.${hint}`);
+        }
+        if (isOwned && parsed.mcpServers[MCP_ID]?.env) {
+            entry.env = parsed.mcpServers[MCP_ID].env;
         }
         if (JSON.stringify(parsed.mcpServers[MCP_ID]) === JSON.stringify(entry)) {
             return true;
         }
-        if (Object.hasOwn(parsed.mcpServers, MCP_ID)) {
+        if (alreadyPresent) {
             warnings.push("Updating the AEO-owned aeo-antigravity MCP entry.");
         }
     }
@@ -1094,7 +1431,7 @@ async function mergeMcp({
     if (current === null) {
         created.add(relative);
     } else {
-        backupFiles.push(await backupFile(homeDir, id, when, target, relative));
+        backupFiles.push(await backupFile(homeDir, id, when, layout ? layout.root : target, relative));
     }
     await writeAtomic(file, next, writeImpl);
     changed.push(relative);
@@ -1102,6 +1439,7 @@ async function mergeMcp({
 }
 
 async function mergePermission({
+    layout,
     target,
     manifest,
     homeDir,
@@ -1111,10 +1449,12 @@ async function mergePermission({
     changed,
     created,
     warnings,
+    adopt,
+    adopted,
     writeImpl
 }) {
-    const relative = path.join(".claude", "settings.local.json");
-    const file = path.join(target, relative);
+    const file = layout ? layout.claudeSettingsFile : path.join(target, path.join(".claude", "settings.local.json"));
+    const relative = layout ? toPosix(path.relative(layout.root, file)) : toPosix(path.join(".claude", "settings.local.json"));
     const current = await readText(file);
     let parsed = { permissions: { allow: [] } };
     if (current !== null) {
@@ -1122,7 +1462,7 @@ async function mergePermission({
     }
     if (!parsed.permissions || typeof parsed.permissions !== "object" || Array.isArray(parsed.permissions)) {
         if (current !== null && parsed.permissions !== undefined) {
-            throw new Error(".claude/settings.local.json permissions is not an object. Installation stopped.");
+            throw new Error(`${relative} permissions is not an object. Installation stopped.`);
         }
         parsed.permissions = {};
     }
@@ -1130,12 +1470,17 @@ async function mergePermission({
         parsed.permissions.allow = [];
     }
     if (!Array.isArray(parsed.permissions.allow)) {
-        throw new Error(".claude/settings.local.json permissions.allow is not an array. Installation stopped.");
+        throw new Error(`${relative} permissions.allow is not an array. Installation stopped.`);
     }
     const already = parsed.permissions.allow.includes(PERMISSION);
-    const owned = owns(manifest, ".claude/settings.local.json", "permissions.allow");
+    const owned = owns(manifest, relative, "permissions.allow");
     if (already && !owned && current !== null) {
-        warnings.push("The AEO permission is already present and was not added by a previous AEO manifest. AEO will not claim it.");
+        if (adopt) {
+            adopted?.push(`${relative} AEO permission`);
+            return true;
+        }
+        const hint = (layout?.mode === "global" && !adopt) ? " Pass --adopt to claim it." : "";
+        warnings.push(`The AEO permission is already present and was not added by a previous AEO manifest. AEO will not claim it.${hint}`);
         return false;
     }
     if (already) {
@@ -1146,7 +1491,7 @@ async function mergePermission({
     if (current === null) {
         created.add(toPosix(relative));
     } else {
-        backupFiles.push(await backupFile(homeDir, id, when, target, relative));
+        backupFiles.push(await backupFile(homeDir, id, when, layout ? layout.root : target, relative));
     }
     await writeAtomic(file, next, writeImpl);
     changed.push(toPosix(relative));
@@ -1176,9 +1521,13 @@ function mergeInstalled(previous, next) {
     return [...map.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-function mergeBlocks(previous, next) {
+function mergeBlocks(previous, next, installedFiles = []) {
+    const ownedPaths = new Set((installedFiles || []).map((entry) => (typeof entry === "string" ? entry : entry.path)));
     const map = new Map();
     const add = (block) => {
+        if (!block?.file || ownedPaths.has(block.file)) {
+            return;
+        }
         const key = `${block.file}\0${block.id}`;
         const current = map.get(key);
         const sha256 = block.sha256 || current?.sha256 || null;
@@ -1200,19 +1549,20 @@ function combineManifest(previous, next) {
     for (const entry of [...(previous?.mergedEntries || []), ...(next.mergedEntries || [])]) {
         entries.set(`${entry.file}\0${entry.path}`, entry);
     }
+    const mergedInstalled = mergeInstalled(previous, next.installedFiles);
     return {
         schemaVersion: SCHEMA_VERSION,
         aeoVersion: AEO_VERSION,
         projectId: next.projectId,
         targets: unique([...(previous?.targets || []), ...(next.targets || [])]),
         createdFiles: unique([...(previous?.createdFiles || []), ...(next.createdFiles || [])]),
-        installedFiles: mergeInstalled(previous, next.installedFiles),
-        managedBlocks: mergeBlocks(previous, next.managedBlocks),
+        installedFiles: mergedInstalled,
+        managedBlocks: mergeBlocks(previous, next.managedBlocks, mergedInstalled),
         mergedEntries: [...entries.values()]
     };
 }
 
-function buildManifest({ id, codex, claude, created, claimMcp, claimPermission, installed, blocks }) {
+function buildManifest({ id, codex, claude, created, claimMcp, claimPermission, installed, blocks, layout }) {
     const mergedEntries = [];
     const targets = [];
     if (codex) {
@@ -1220,12 +1570,14 @@ function buildManifest({ id, codex, claude, created, claimMcp, claimPermission, 
     }
     if (claude) {
         targets.push("claude");
+        const mcpRel = layout ? toPosix(path.relative(layout.root, layout.claudeMcpFile)) : ".mcp.json";
+        const settingsRel = layout ? toPosix(path.relative(layout.root, layout.claudeSettingsFile)) : ".claude/settings.local.json";
         if (claimMcp) {
-            mergedEntries.push({ file: ".mcp.json", path: "mcpServers.aeo-antigravity" });
+            mergedEntries.push({ file: mcpRel, path: "mcpServers.aeo-antigravity" });
         }
         if (claimPermission) {
             mergedEntries.push({
-                file: ".claude/settings.local.json",
+                file: settingsRel,
                 path: "permissions.allow",
                 value: PERMISSION
             });
@@ -1263,6 +1615,9 @@ function expandOwned(manifest) {
 async function presetBytes(repoRoot, relative) {
     if (relative === GITIGNORE_RELATIVE) {
         return Buffer.from(GITIGNORE_TEXT);
+    }
+    if (relative === ".codex/AGENTS.md") {
+        return readFile(path.join(repoRoot, "presets", "codex", "orchestration-block.md"));
     }
     if (relative.startsWith(`${BRIDGE_DIR}/`)) {
         return readFile(path.join(repoRoot, "bridge", "antigravity-mcp", relative.slice(BRIDGE_DIR.length + 1)));
@@ -1357,17 +1712,18 @@ async function removeManagedBlock(target, block, repoRoot, forceRemove, changed,
 }
 
 export async function uninstall(options) {
-    const target = path.resolve(options.target);
+    const layout = options.layout || resolveLayout(options);
+    const target = layout.root;
     const repoRoot = options.repoRoot || defaultRepoRoot();
     const forceRemove = Boolean(options.forceRemoveModified);
-    const manifest = await loadManifest(target);
+    const manifest = await loadManifest(layout);
     if (!manifest) {
         return { ok: false, error: "No AEO install manifest. Refusing to guess which files to delete.", preserved: [] };
     }
     if (manifest.schemaVersion !== 1 && manifest.schemaVersion !== SCHEMA_VERSION) {
         return { ok: false, error: "Unsupported AEO manifest schema. Uninstall stopped.", preserved: [] };
     }
-    const problems = await preflightUninstall(target, manifest);
+    const problems = await preflightUninstall(layout, manifest);
     if (problems.length > 0) {
         return { ok: false, error: problems.join(" "), changed: [], preserved: [] };
     }
@@ -1377,11 +1733,13 @@ export async function uninstall(options) {
         await removeManagedBlock(target, block, repoRoot, forceRemove, changed, preserved, manifest.createdFiles);
     }
 
-    if ((manifest.mergedEntries || []).some((entry) => entry.file === ".mcp.json")) {
-        await removeMcp(target, manifest, changed);
+    const mcpRel = toPosix(path.relative(layout.root, layout.claudeMcpFile));
+    if ((manifest.mergedEntries || []).some((entry) => entry.file === mcpRel)) {
+        await removeMcp(layout, manifest, changed);
     }
-    if ((manifest.mergedEntries || []).some((entry) => entry.file === ".claude/settings.local.json")) {
-        await removePermission(target, manifest, changed);
+    const settingsRel = toPosix(path.relative(layout.root, layout.claudeSettingsFile));
+    if ((manifest.mergedEntries || []).some((entry) => entry.file === settingsRel)) {
+        await removePermission(layout, manifest, changed);
     }
     let hadBridge = false;
     let bridgePreserved = false;
@@ -1401,20 +1759,25 @@ export async function uninstall(options) {
             changed.push("deleted .aeo/bridge");
         }
     }
-    await rm(path.join(target, ".aeo", "install-manifest.json"), { force: true });
-    await removeIfEmpty(path.join(target, ".aeo", "bridge", "antigravity-mcp", "lib"));
-    await removeIfEmpty(path.join(target, ".aeo", "bridge", "antigravity-mcp"));
-    await removeIfEmpty(path.join(target, ".aeo", "bridge"));
-    await removeIfEmpty(path.join(target, ".aeo"));
-    await removeIfEmpty(path.join(target, ".codex", "agents"));
-    await removeIfEmpty(path.join(target, ".codex"));
-    await removeIfEmpty(path.join(target, ".claude", "agents"));
-    await removeIfEmpty(path.join(target, ".claude", "rules"));
-    await removeIfEmpty(path.join(target, ".claude"));
+    await rm(layout.manifestFile, { force: true });
+    await removeIfEmpty(path.join(layout.bridgeDir, "lib"));
+    await removeIfEmpty(layout.bridgeDir);
+    await removeIfEmpty(path.join(layout.root, ".aeo", "bridge"));
+    await removeIfEmpty(path.join(layout.root, ".aeo"));
+    await removeIfEmpty(layout.codexAgentsDir);
+    if (layout.mode === "project") {
+        await removeIfEmpty(path.join(layout.root, ".codex"));
+    }
+    await removeIfEmpty(layout.claudeAgentsDir);
+    await removeIfEmpty(path.join(layout.root, ".claude", "rules"));
+    if (layout.mode === "project") {
+        await removeIfEmpty(path.join(layout.root, ".claude"));
+    }
     return { ok: true, changed, preserved };
 }
 
-async function preflightUninstall(target, manifest) {
+async function preflightUninstall(layout, manifest) {
+    const target = layout.root;
     const problems = [];
     for (const block of manifest.managedBlocks || []) {
         const text = await readText(path.join(target, block.file));
@@ -1427,7 +1790,9 @@ async function preflightUninstall(target, manifest) {
             problems.push(`${block.file} has malformed AEO markers. Uninstall stopped.`);
         }
     }
-    for (const relative of [".mcp.json", ".claude/settings.local.json"]) {
+    const mcpRel = toPosix(path.relative(layout.root, layout.claudeMcpFile));
+    const settingsRel = toPosix(path.relative(layout.root, layout.claudeSettingsFile));
+    for (const relative of [mcpRel, settingsRel]) {
         if (!(manifest.mergedEntries || []).some((entry) => entry.file === relative)) {
             continue;
         }
@@ -1444,8 +1809,9 @@ async function preflightUninstall(target, manifest) {
     return problems;
 }
 
-async function removeMcp(target, manifest, changed) {
-    const file = path.join(target, ".mcp.json");
+async function removeMcp(layout, manifest, changed) {
+    const file = layout.claudeMcpFile;
+    const relative = toPosix(path.relative(layout.root, file));
     const current = await readText(file);
     if (current === null) {
         return;
@@ -1456,22 +1822,22 @@ async function removeMcp(target, manifest, changed) {
     }
     const serverCount = parsed.mcpServers ? Object.keys(parsed.mcpServers).length : 0;
     const otherKeys = Object.keys(parsed).filter((key) => key !== "mcpServers");
-    const created = (manifest.createdFiles || []).includes(".mcp.json");
+    const created = (manifest.createdFiles || []).includes(relative);
     if (serverCount === 0 && otherKeys.length === 0 && created) {
         await rm(file, { force: true });
-        changed.push("deleted .mcp.json");
+        changed.push(`deleted ${relative}`);
         return;
     }
     const next = `${JSON.stringify(parsed, null, 2)}\n`;
     if (next !== current) {
         await writeAtomic(file, next);
-        changed.push("updated .mcp.json");
+        changed.push(`updated ${relative}`);
     }
 }
 
-async function removePermission(target, manifest, changed) {
-    const relative = ".claude/settings.local.json";
-    const file = path.join(target, relative);
+async function removePermission(layout, manifest, changed) {
+    const file = layout.claudeSettingsFile;
+    const relative = toPosix(path.relative(layout.root, file));
     const current = await readText(file);
     if (current === null) {
         return;
@@ -1515,14 +1881,18 @@ async function removeIfEmpty(directory) {
     }
 }
 
-function wholeFileCandidates() {
-    return [
+function wholeFileCandidates(layout = null) {
+    const list = [
         GITIGNORE_RELATIVE,
         ...CODEX_AGENTS.map(([fileName]) => toPosix(path.join(".codex", "agents", fileName))),
         ".claude/rules/aeo-orchestration.md",
         ...CLAUDE_AGENTS.map((fileName) => toPosix(path.join(".claude", "agents", fileName))),
         ...BRIDGE_FILES.map((fileName) => `${BRIDGE_DIR}/${toPosix(fileName)}`)
     ];
+    if (layout?.mode === "global") {
+        list.push(".codex/AGENTS.md");
+    }
+    return list;
 }
 
 async function fileOwnership(target, manifest, relative) {
@@ -1566,44 +1936,56 @@ async function blockOwnership(target, manifest, file, id, begin, end) {
     return row;
 }
 
-async function ownershipReport(target, manifest) {
+async function ownershipReport(targetOrLayout, manifest) {
+    const layout = typeof targetOrLayout === "object" && targetOrLayout.root ? targetOrLayout : null;
+    const target = layout ? layout.root : path.resolve(targetOrLayout);
     const rows = [];
-    for (const relative of wholeFileCandidates()) {
+    const isAgentsWholeFile = manifestOwnsFile(manifest, ".codex/AGENTS.md");
+    for (const relative of wholeFileCandidates(layout)) {
+        if (relative === ".codex/AGENTS.md" && !isAgentsWholeFile) {
+            continue;
+        }
         rows.push(await fileOwnership(target, manifest, relative));
     }
-    rows.push(await blockOwnership(target, manifest, "AGENTS.md", "AEO_ORCHESTRATION", AGENTS_BEGIN, AGENTS_END));
-    rows.push(await blockOwnership(target, manifest, ".codex/config.toml", "AEO_CONFIG", CONFIG_BEGIN, CONFIG_END));
+    const agentsRel = layout ? toPosix(path.relative(layout.root, layout.agentsFile)) : "AGENTS.md";
+    const configRel = layout ? toPosix(path.relative(layout.root, layout.codexConfigFile)) : ".codex/config.toml";
+    if (!isAgentsWholeFile) {
+        rows.push(await blockOwnership(target, manifest, agentsRel, "AEO_ORCHESTRATION", AGENTS_BEGIN, AGENTS_END));
+    }
+    rows.push(await blockOwnership(target, manifest, configRel, "AEO_CONFIG", CONFIG_BEGIN, CONFIG_END));
     return rows;
 }
 
 export async function status(options) {
-    const target = path.resolve(options.target);
-    const manifest = await loadManifest(target);
-    const homeDir = options.homeDir || os.homedir();
+    const layout = options.layout || resolveLayout(options);
+    const target = layout.root;
+    const manifest = await loadManifest(layout);
+    const homeDir = layout.homeDir;
     const report = {
         installed: Boolean(manifest),
         manifest,
-        ownership: await ownershipReport(target, manifest),
+        ownership: await ownershipReport(layout, manifest),
         codex: {},
         claude: {},
         bridge: {},
-        trustNote: TRUST_NOTE
+        trustNote: layout.mode === "global" ? TRUST_NOTE_GLOBAL : TRUST_NOTE
     };
-    const agents = await readText(path.join(target, "AGENTS.md"));
-    const config = await readText(path.join(target, ".codex", "config.toml"));
+    const agents = await readText(layout.agentsFile);
+    const config = await readText(layout.codexConfigFile);
+    const isAgentsWholeFile = manifestOwnsFile(manifest, toPosix(path.relative(layout.root, layout.agentsFile)));
     report.codex = {
-        orchestrationBlock: analyzeMarkers(agents || "", AGENTS_BEGIN, AGENTS_END).state === "present",
+        orchestrationBlock: isAgentsWholeFile || analyzeMarkers(agents || "", AGENTS_BEGIN, AGENTS_END).state === "present",
         configBlock: analyzeMarkers(config || "", CONFIG_BEGIN, CONFIG_END).state === "present",
-        agents: await Promise.all(CODEX_AGENTS.map(async ([fileName]) => exists(path.join(target, ".codex", "agents", fileName)))),
+        agents: await Promise.all(CODEX_AGENTS.map(async ([fileName]) => exists(path.join(layout.codexAgentsDir, fileName)))),
         server: Boolean(config && config.includes("[mcp_servers.aeo-antigravity]"))
     };
     report.claude = {
-        rule: await exists(path.join(target, ".claude", "rules", "aeo-orchestration.md")),
-        agents: await Promise.all(CLAUDE_AGENTS.map(async (fileName) => exists(path.join(target, ".claude", "agents", fileName)))),
+        rule: await exists(layout.claudeRuleFile),
+        agents: await Promise.all(CLAUDE_AGENTS.map(async (fileName) => exists(path.join(layout.claudeAgentsDir, fileName)))),
         server: false,
         permission: false
     };
-    const mcpText = await readText(path.join(target, ".mcp.json"));
+    const mcpText = await readText(layout.claudeMcpFile);
     if (mcpText) {
         try {
             const parsed = JSON.parse(mcpText);
@@ -1612,7 +1994,7 @@ export async function status(options) {
             report.claude.server = false;
         }
     }
-    const settingsText = await readText(path.join(target, ".claude", "settings.local.json"));
+    const settingsText = await readText(layout.claudeSettingsFile);
     if (settingsText) {
         try {
             const parsed = JSON.parse(settingsText);
@@ -1621,13 +2003,12 @@ export async function status(options) {
             report.claude.permission = false;
         }
     }
-    const bridgeIndex = path.join(target, ".aeo", "bridge", "antigravity-mcp", "index.js");
     report.bridge = {
-        filesPresent: await exists(bridgeIndex),
-        dependenciesInstalled: await exists(path.join(target, ".aeo", "bridge", "antigravity-mcp", "node_modules")),
+        filesPresent: await exists(layout.bridgeIndex),
+        dependenciesInstalled: await exists(path.join(path.dirname(layout.bridgeIndex), "node_modules")),
         agy: await agyDiscoverable()
     };
-    report.trustNote = await trustNote(target, homeDir);
+    report.trustNote = layout.mode === "global" ? TRUST_NOTE_GLOBAL : await trustNote(target, homeDir);
     return report;
 }
 
@@ -1657,7 +2038,8 @@ async function agyDiscoverable() {
 }
 
 export async function doctor(options) {
-    const target = path.resolve(options.target);
+    const layout = options.layout || resolveLayout(options);
+    const target = layout.root;
     const problems = [];
     const warnings = [];
     const info = await stat(target).catch(() => null);
@@ -1668,18 +2050,20 @@ export async function doctor(options) {
     if (major < 20) {
         problems.push(`Node ${process.versions.node} is older than 20.`);
     }
-    const agents = await readText(path.join(target, "AGENTS.md"));
+    const agentsRel = toPosix(path.relative(layout.root, layout.agentsFile));
+    const agents = await readText(layout.agentsFile);
     if (agents !== null) {
         const markers = analyzeMarkers(agents, AGENTS_BEGIN, AGENTS_END);
         if (markers.state === "malformed") {
-            problems.push("AGENTS.md has malformed AEO markers.");
+            problems.push(`${agentsRel} has malformed AEO markers.`);
         }
     }
-    const config = await readText(path.join(target, ".codex", "config.toml"));
+    const configRel = toPosix(path.relative(layout.root, layout.codexConfigFile));
+    const config = await readText(layout.codexConfigFile);
     if (config !== null) {
         const markers = analyzeMarkers(config, CONFIG_BEGIN, CONFIG_END);
         if (markers.state === "malformed") {
-            problems.push(".codex/config.toml has malformed AEO markers.");
+            problems.push(`${configRel} has malformed AEO markers.`);
         }
         const duplicates = duplicateTables(config);
         if (duplicates.length > 0) {
@@ -1687,7 +2071,7 @@ export async function doctor(options) {
         }
         if (markers.state === "present") {
             for (const [fileName] of CODEX_AGENTS) {
-                if (!(await exists(path.join(target, ".codex", "agents", fileName)))) {
+                if (!(await exists(path.join(layout.codexAgentsDir, fileName)))) {
                     problems.push(`Missing ${fileName}`);
                 }
             }
@@ -1708,17 +2092,17 @@ export async function doctor(options) {
             }
         }
     }
-    for (const relative of [".mcp.json", path.join(".claude", "settings.local.json")]) {
-        const text = await readText(path.join(target, relative));
+    for (const file of [layout.claudeMcpFile, layout.claudeSettingsFile]) {
+        const text = await readText(file);
         if (text !== null) {
             try {
                 JSON.parse(text);
             } catch {
-                problems.push(`${toPosix(relative)} is not valid JSON.`);
+                problems.push(`${toPosix(path.relative(layout.root, file))} is not valid JSON.`);
             }
         }
     }
-    const bridgeIndex = path.join(target, ".aeo", "bridge", "antigravity-mcp", "index.js");
+    const bridgeIndex = layout.bridgeIndex;
     if (!(await exists(bridgeIndex))) {
         warnings.push("Bridge entrypoint is not installed in .aeo/bridge.");
     } else if (!(await exists(path.join(path.dirname(bridgeIndex), "node_modules")))) {
@@ -1727,11 +2111,11 @@ export async function doctor(options) {
     if (!(await agyDiscoverable())) {
         warnings.push("agy was not found on PATH and AGY_BIN is unset or missing.");
     }
-    const manifest = await loadManifest(target);
+    const manifest = await loadManifest(layout);
     if (manifest && manifest.schemaVersion !== 1 && manifest.schemaVersion !== SCHEMA_VERSION) {
         problems.push("Unsupported AEO manifest schema.");
     }
-    for (const row of await ownershipReport(target, manifest)) {
+    for (const row of await ownershipReport(layout, manifest)) {
         if (row.state === "unowned") {
             const label = row.id ? `${row.path} ${row.id}` : row.path;
             problems.push(`PRESENT BUT NOT OWNED: ${label} exists and the active manifest does not own it. Matching content is not ownership. AEO did not change it.`);
@@ -1763,6 +2147,13 @@ export async function doctor(options) {
             }
         }
     }
+    if (layout.mode === "project") {
+        const globalManifestPath = path.join(layout.homeDir, ".aeo", "global-install-manifest.json");
+        const projectManifest = await loadManifest(layout);
+        if (projectManifest && (await exists(globalManifestPath))) {
+            warnings.push("Both a global AEO installation and a project AEO installation exist. Both configure the same agent and MCP server names.");
+        }
+    }
     return { ok: problems.length === 0, problems, warnings };
 }
 
@@ -1774,6 +2165,9 @@ export function formatPlan(result) {
     }
     for (const file of result.unownedFiles || []) {
         lines.push(`UNOWNED EXISTING FILE — COLLISION: ${file}`);
+    }
+    for (const file of unique(result.adopted || [])) {
+        lines.push(`ADOPTED: ${file}`);
     }
     for (const conflict of result.conflicts || []) {
         lines.push(`Conflict: ${conflict}`);

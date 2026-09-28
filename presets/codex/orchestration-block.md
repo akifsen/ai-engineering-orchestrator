@@ -128,7 +128,7 @@ Before a substantive delegation, write a bounded contract. Include only what cha
 - tests and other verification;
 - definition of done.
 
-Do not paste the repository into the prompt. Pass the absolute repository root as `cwd`. Let Antigravity inspect the code.
+Do not paste the repository into the prompt. Pass the absolute repository root as `cwd`. Let Antigravity inspect the code. Keep each delegation small enough to finish within the bridge timeout. Split large work into sequential delegations, and name the verification commands the engineer may run.
 
 Bad: `Fix the project.`
 

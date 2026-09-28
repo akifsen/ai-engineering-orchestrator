@@ -6,6 +6,12 @@ Do not commit API keys, tokens, OAuth files, or machine-specific credential path
 
 If a secret lands in a commit, revoke it at the provider. Do not open a public issue that contains the secret.
 
+## MCP server secrets
+
+Do not put API keys inline in `~/.codex/config.toml` `env = {...}` or `~/.claude.json`. Set them as user environment variables and forward them (Codex: `env_vars = ["NAME"]` in the `[mcp_servers.<name>]` table).
+
+AEO backups under `~/.aeo/backups` are copies of your config, are written owner-only (0600/0700) on POSIX, and should be deleted or scrubbed if they captured a secret.
+
 ## Agent permissions
 
 The example permission files allow repository edits and a short list of read-only git and test commands. They deny push, reset, clean, rebase, merge, and commit. The Antigravity example also denies checkout and writes under `.git`.

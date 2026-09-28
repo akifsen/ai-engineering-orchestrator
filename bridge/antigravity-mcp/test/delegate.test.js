@@ -16,6 +16,7 @@ import {
     parseAgentEnvelope,
     parseDurationMs,
     resolveAgyBin,
+    resolveTimeouts,
     truncate
 } from "../lib/delegate.js";
 
@@ -79,6 +80,8 @@ test("implementation prompt carries the engineer rules and the assignment", () =
     const prompt = buildImplementationPrompt("Add a health check.");
     const required = [
         "Inspect the repository before editing.",
+        "Prefer built-in file read, search, and edit tools over shell commands. In headless mode a shell command outside the allowlist can end the whole run without output.",
+        "Run only the verification commands the assignment names or that are clearly allowed; do not improvise extra shell commands.",
         "Follow the existing architecture.",
         "Complete the delegated bounded scope.",
         "Avoid unrelated modifications.",
@@ -104,6 +107,15 @@ test("implementation prompt carries the engineer rules and the assignment", () =
     for (const phrase of required) {
         assert.ok(prompt.includes(phrase), phrase);
     }
+
+    const inspectIndex = prompt.indexOf("Inspect the repository before editing.");
+    const preferIndex = prompt.indexOf("Prefer built-in file read, search, and edit tools over shell commands.");
+    const verifyIndex = prompt.indexOf("Run only the verification commands the assignment names or that are clearly allowed; do not improvise extra shell commands.");
+    const followIndex = prompt.indexOf("Follow the existing architecture.");
+
+    assert.ok(inspectIndex < preferIndex, "prefer built-in rule follows inspect rule");
+    assert.ok(preferIndex < verifyIndex, "verify rule follows prefer built-in rule");
+    assert.ok(verifyIndex < followIndex, "follow architecture follows verify rule");
 
     assert.ok(prompt.endsWith("Add a health check."));
 });
@@ -464,3 +476,178 @@ test("Windows process termination does not use a shell", () => {
     assert.deepEqual(calls[0].args, ["/PID", "4242", "/T", "/F"]);
     assert.equal(calls[0].options.shell, false);
 });
+
+test("resolveTimeouts resolves default, valid, clamped, and invalid timeout values", () => {
+    // default
+    const def = resolveTimeouts({});
+    assert.equal(def.minutes, 15);
+    assert.equal(def.cliTimeout, "15m");
+    assert.equal(def.hardTimeoutMs, 16 * 60 * 1000);
+    assert.equal(def.warning, null);
+
+    const empty = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "   " });
+    assert.equal(empty.minutes, 15);
+    assert.equal(empty.cliTimeout, "15m");
+    assert.equal(empty.hardTimeoutMs, 16 * 60 * 1000);
+    assert.equal(empty.warning, null);
+
+    // valid
+    const valid = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "10" });
+    assert.equal(valid.minutes, 10);
+    assert.equal(valid.cliTimeout, "10m");
+    assert.equal(valid.hardTimeoutMs, 11 * 60 * 1000);
+    assert.equal(valid.warning, null);
+
+    const validMax = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "18" });
+    assert.equal(validMax.minutes, 18);
+    assert.equal(validMax.cliTimeout, "18m");
+    assert.equal(validMax.hardTimeoutMs, 19 * 60 * 1000);
+    assert.equal(validMax.warning, null);
+
+    const validMin = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "1" });
+    assert.equal(validMin.minutes, 1);
+    assert.equal(validMin.cliTimeout, "1m");
+    assert.equal(validMin.hardTimeoutMs, 2 * 60 * 1000);
+    assert.equal(validMin.warning, null);
+
+    // clamped
+    const clampedHigh = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "25" });
+    assert.equal(clampedHigh.minutes, 18);
+    assert.equal(clampedHigh.cliTimeout, "18m");
+    assert.equal(clampedHigh.hardTimeoutMs, 19 * 60 * 1000);
+    assert.equal(clampedHigh.warning, null);
+
+    const clampedLow = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "0" });
+    assert.equal(clampedLow.minutes, 1);
+    assert.equal(clampedLow.cliTimeout, "1m");
+    assert.equal(clampedLow.hardTimeoutMs, 2 * 60 * 1000);
+    assert.equal(clampedLow.warning, null);
+
+    const clampedNegative = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "-5" });
+    assert.equal(clampedNegative.minutes, 1);
+    assert.equal(clampedNegative.cliTimeout, "1m");
+    assert.equal(clampedNegative.hardTimeoutMs, 2 * 60 * 1000);
+    assert.equal(clampedNegative.warning, null);
+
+    // invalid
+    const invalidText = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "abc" });
+    assert.equal(invalidText.minutes, 15);
+    assert.equal(invalidText.cliTimeout, "15m");
+    assert.equal(invalidText.hardTimeoutMs, 16 * 60 * 1000);
+    assert.match(invalidText.warning, /Invalid AEO_AGY_TIMEOUT_MINUTES/);
+
+    const invalidFloat = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "12.5" });
+    assert.equal(invalidFloat.minutes, 15);
+    assert.equal(invalidFloat.cliTimeout, "15m");
+    assert.equal(invalidFloat.hardTimeoutMs, 16 * 60 * 1000);
+    assert.match(invalidFloat.warning, /Invalid AEO_AGY_TIMEOUT_MINUTES/);
+
+    const invalidUnit = resolveTimeouts({ AEO_AGY_TIMEOUT_MINUTES: "15m" });
+    assert.equal(invalidUnit.minutes, 15);
+    assert.equal(invalidUnit.cliTimeout, "15m");
+    assert.equal(invalidUnit.hardTimeoutMs, 16 * 60 * 1000);
+    assert.match(invalidUnit.warning, /Invalid AEO_AGY_TIMEOUT_MINUTES/);
+});
+
+test("empty-response with permission diagnostics includes the permission next step", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: JSON.stringify({
+            status: "SUCCESS",
+            response: ""
+        }),
+        stderr: 'jetski: no output produced — a tool required the "command" permission\n'
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl }
+        );
+        assert.equal(result.outcome, "agent_failure");
+        assert.equal(result.isError, true);
+        assert.match(result.text, /^Outcome: agent_failure\nAntigravity reported SUCCESS but returned an empty response\.\nTreat the implementation as not completed\./);
+        assert.match(result.text, /Likely cause:\nA shell command was denied by the Antigravity permission policy\./);
+        assert.match(result.text, /Next step:\nTell the engineer exactly which commands it may run, or add a narrow allow rule in ~[/\\]\.gemini[/\\]antigravity-cli[/\\]settings\.json \(docs\/permissions\.md\)\./);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("empty-response with soft-deny diagnostics includes the permission next step", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: JSON.stringify({
+            status: "SUCCESS",
+            response: ""
+        }),
+        stderr: "command resulted in soft-deny by policy\n"
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl }
+        );
+        assert.equal(result.outcome, "agent_failure");
+        assert.equal(result.isError, true);
+        assert.match(result.text, /Likely cause:\nA shell command was denied by the Antigravity permission policy\./);
+        assert.match(result.text, /Next step:\nTell the engineer exactly which commands it may run, or add a narrow allow rule in ~[/\\]\.gemini[/\\]antigravity-cli[/\\]settings\.json \(docs\/permissions\.md\)\./);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("empty-response with print-timeout diagnostics includes the split and baseline next step", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: JSON.stringify({
+            status: "SUCCESS",
+            response: ""
+        }),
+        stderr: "[agy] print timeout after 15m0s with turn in progress; returning partial output\n"
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl }
+        );
+        assert.equal(result.outcome, "agent_failure");
+        assert.equal(result.isError, true);
+        assert.match(result.text, /^Outcome: agent_failure\nAntigravity reported SUCCESS but returned an empty response\.\nTreat the implementation as not completed\./);
+        assert.match(result.text, /Likely cause:\nThe print timeout elapsed; partial edits may exist on disk — compare git status with the baseline before retrying\./);
+        assert.match(result.text, /Next step:\nSplit the assignment into smaller sequential delegations\./);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("empty-response without permission or timeout diagnostics includes no extra advice section", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: JSON.stringify({
+            status: "SUCCESS",
+            response: ""
+        }),
+        stderr: "normal diagnostics\n"
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl }
+        );
+        assert.equal(result.outcome, "agent_failure");
+        assert.equal(result.isError, true);
+        assert.equal(result.text.includes("Likely cause:"), false);
+        assert.equal(result.text.includes("Next step:"), false);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
