@@ -1,8 +1,8 @@
 # Installation
 
-AEO owns only configuration that is namespaced as AEO. Existing project instructions, global Codex config, global Claude config, MCP servers, custom agents, model settings, sandbox settings, and approval settings stay in place.
+AEO owns only configuration that is namespaced as AEO. Existing project instructions, global Codex config, global Claude config, MCP servers, custom agents, model settings, sandbox settings, and approval settings stay in place. Global config is not modified unless `--global`.
 
-The installer never edits these by default:
+The installer never edits these unless `--global`:
 
 - `~/.codex/config.toml`
 - `~/.codex/AGENTS.md`
@@ -36,6 +36,44 @@ Pass `--codex`, `--claude`, or both. The command stops if you pass neither.
 Before AEO changes a shared file that already exists, it copies that file to `~/.aeo/backups/<project-id>/<timestamp>/`. A forced replacement of a drifted AEO-owned file is backed up there too. Unchanged files are not backed up. The project id is a hash of the project path, not the path itself. Uninstall does not copy a backup back over the project. Recovery from a backup is manual.
 
 If `npm ci` fails while installing the bridge, MCP configuration is not activated.
+
+## Global install
+
+AEO supports a user-scope `--global` mode for configuring user-level Codex and Claude environments across projects:
+
+```bash
+node scripts/aeo.mjs install --global --codex --claude --dry-run
+node scripts/aeo.mjs install --global --codex --claude
+node scripts/aeo.mjs update --global --codex --claude
+node scripts/aeo.mjs doctor --global
+node scripts/aeo.mjs uninstall --global
+```
+
+Pass either `--target <project>` or `--global`, not both.
+
+### Global layout
+
+| Path | Purpose |
+| --- | --- |
+| `~/.codex/config.toml` | User tables, plus one AEO config block |
+| `~/.codex/AGENTS.md` | User text, plus one AEO orchestration block (or replaced with `--replace-codex-agents-md`) |
+| `~/.codex/agents/aeo-*.toml` | Namespaced Codex agent definitions |
+| `~/.claude.json` | Existing servers, plus `mcpServers["aeo-antigravity"]` |
+| `~/.claude/settings.json` | Existing permissions, plus one allow entry |
+| `~/.claude/rules/aeo-orchestration.md` | Orchestration rule |
+| `~/.claude/agents/aeo-*.md` | Namespaced Claude agent definitions |
+| `~/.aeo/bridge/antigravity-mcp/` | Runtime bridge files and installed dependencies |
+| `~/.aeo/global-install-manifest.json` | Global install manifest |
+| `~/.aeo/backups/global/<timestamp>/` | Backups of pre-existing modified files |
+
+### Flags
+
+- `--adopt`: Claims pre-existing exact-matching preset files, permissions, or matching `aeo-antigravity` MCP server entries into the global manifest instead of reporting a collision. If pre-existing files or MCP command/args differ, `--adopt` refuses to claim them.
+- `--replace-codex-agents-md`: In global mode, replaces the entire `~/.codex/AGENTS.md` with the AEO orchestration block instead of appending to it, backing up pre-existing content to `~/.aeo/backups/global/<timestamp>/` when written. Whole-file ownership in the manifest is sticky: subsequent installs or updates keep whole-file mode without needing the flag. Unchanged runs write no backup and report no changes for it. On uninstall, the file is deleted if unchanged from the install, or preserved if modified.
+
+### Coexistence
+
+When both a global AEO installation (`~/.aeo/global-install-manifest.json`) and a project AEO installation (`<project>/.aeo/install-manifest.json`) exist, running `doctor` on the project produces a warning that both configure the same agent and MCP server names.
 
 ## Update safety
 

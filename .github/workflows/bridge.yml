@@ -6,7 +6,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
     defaults:
       run:
         working-directory: bridge/antigravity-mcp
@@ -14,17 +19,22 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: bridge/antigravity-mcp/package-lock.json
       - run: npm ci
       - run: npm test
 
   installer:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
-      - run: node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js
+          node-version: ${{ matrix.node }}
+      - run: node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js

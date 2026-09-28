@@ -22,6 +22,16 @@ The bridge runs `process.env.AGY_BIN` or `agy`. Install the Antigravity CLI and 
 
 Headless mode cannot show an approval card. A command that is not allowed is soft-denied, and the CLI can still exit 0. The denial is on stderr and is included as CLI diagnostics. Treat that command as not run. Add a specific allow rule for the test command you trust. Do not switch the example to skip every permission check.
 
+In headless print mode, a soft-denied command can cause Antigravity to produce an empty response (`jetski: no output produced — a tool required the "command" permission ...`), ending the run with status `SUCCESS` but leading the bridge to classify the run as `agent_failure`. The fix is to tell the engineer exactly which verification commands it may run in the assignment contract, instruct it to prefer built-in file tools over shell commands, or add narrow allow rules in `~/.gemini/antigravity-cli/settings.json` (such as the read-only inspection rules in `antigravity/settings.example.json`; see [permissions](permissions.md)).
+
+## Print timeout
+
+A large assignment or long-running turn can hit the CLI print timeout (stderr: `[agy] print timeout after 15m0s with turn in progress; returning partial output`), which returns partial output or an empty response (`agent_failure` or `timeout`).
+
+Partial edits may already exist on disk when the timeout elapses. Compare `git status` against your recorded baseline before retrying to determine what was changed, and revert or preserve those changes intentionally. Split large work into smaller sequential delegations so each turn finishes well within the timeout.
+
+The timeout can be configured via the `AEO_AGY_TIMEOUT_MINUTES` environment variable (integer, default 15). The value is clamped to a range of 1..18 minutes. The upper limit of 18 minutes ensures that the bridge's hard timeout (N+1 minutes, up to 19 minutes) always elapses before the Codex client tool timeout (`tool_timeout_sec = 1200`, i.e. 20 minutes) can cancel the bridge.
+
 ## Read or write permission denied
 
 `cwd` must be an absolute directory. The Antigravity example sets `allowNonWorkspaceAccess` to false and trusts `C:\path\to\development` only as a placeholder. Replace that path with the real development directory. Files outside the trusted workspace stay blocked on purpose.

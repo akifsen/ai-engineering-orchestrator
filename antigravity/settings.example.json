@@ -11,6 +11,8 @@
       "command(regex:git diff.*)",
       "command(regex:git log.*)",
       "command(regex:git show.*)",
+      "command(regex:git ls-files.*)",
+      "command(regex:^(ls|dir|Get-ChildItem|Get-Content|Select-String|cat|type|rg|findstr)( .*)?$)",
       "command(regex:npm test.*)",
       "command(regex:npm run test.*)",
       "command(regex:npm run lint.*)",
