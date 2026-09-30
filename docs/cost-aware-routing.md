@@ -41,7 +41,7 @@ Keep the Team Lead on:
 
 ## Where implementation goes
 
-In these presets, substantive implementation goes to the Implementation Engineer. The default path is Gemini through Antigravity (`delegate_antigravity`). When Antigravity is unavailable (quota, auth, or CLI failure), the policy routes the same contract to Cursor through `delegate_cursor` on `aeo-cursor` instead of keeping the work on the Team Lead model.
+In these presets, substantive implementation goes to the Implementation Engineer. The default path is Gemini through Antigravity (`delegate_antigravity`). When Antigravity is unavailable (quota, auth, or CLI failure), the policy routes the same contract to Cursor through `delegate_cursor` on `aeo-cursor` instead of keeping the work on the Team Lead model. For parallel work on independent, non-overlapping scopes, the Team Lead can split delegations between both engineers with worktree isolation.
 
 That covers:
 

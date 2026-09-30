@@ -33,7 +33,7 @@ flowchart LR
   reviewer --> lead
 ```
 
-The policy file is an AEO managed block in the project `AGENTS.md` for Codex, and `.claude/rules/aeo-orchestration.md` for Claude Code. Existing project instructions stay in place. The bridge exposes `delegate_antigravity` on the server `aeo-antigravity`. The diagram still uses the job names. Installed ids are `aeo_explorer` / `aeo-explorer`, `aeo_architect` / `aeo-architect`, `aeo_reviewer` / `aeo-reviewer`, and `aeo_fast_worker` / `aeo-fast-worker`. fast-worker is drawn beside the bridge because it is a different, narrower path: trivial edits only.
+The policy file is an AEO managed block in the project `AGENTS.md` for Codex, and `.claude/rules/aeo-orchestration.md` for Claude Code. Existing project instructions stay in place. The bridges expose `delegate_antigravity` on `aeo-antigravity` and `delegate_cursor` on `aeo-cursor`. The diagram still uses the job names. Installed ids are `aeo_explorer` / `aeo-explorer`, `aeo_architect` / `aeo-architect`, `aeo_reviewer` / `aeo-reviewer`, and `aeo_fast_worker` / `aeo-fast-worker`. fast-worker is drawn beside the bridge because it is a different, narrower path: trivial edits only.
 
 ## Substantive implementation
 
