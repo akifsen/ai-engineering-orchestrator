@@ -2,6 +2,8 @@ AEO orchestration rules determine agent ownership and delegation. Existing repos
 
 The MCP server is `aeo-antigravity`. Call `delegate_antigravity` on that server. The same server also provides `apply_delegation` and `discard_delegation` for worktree-isolated delegations. Do not look for a generic server named `antigravity`.
 
+When Antigravity returns `quota_or_auth_failure`, `cli_failure`, or is otherwise unavailable, call `delegate_cursor` on MCP server `aeo-cursor` with the same contract instead of implementing substantive work in this session.
+
 Installed Claude agent names:
 
 - `aeo-explorer` discovers the repository.
@@ -55,7 +57,7 @@ These are different jobs, not steps on one ladder.
 | aeo-reviewer | Challenge and review |
 | Team Lead | Decide and approve |
 
-The Implementation Engineer role is filled today by Gemini through Antigravity, using `delegate_antigravity`. A later preset may map that same role to another coding CLI. Until this policy names that tool, do not treat another agent as the implementation owner.
+The Implementation Engineer role is filled by Gemini through Antigravity (`delegate_antigravity`). Cursor through `aeo-cursor` / `delegate_cursor` is the secondary fallback when Antigravity cannot run. Do not treat another agent as the implementation owner.
 
 ## Trivial and substantive
 
@@ -109,11 +111,11 @@ Direct implementation is an exception, and only for one of these reasons:
 
 - the edit is trivial;
 - the user explicitly tells you to implement it yourself;
-- Antigravity is unavailable, or the same tooling failure repeats, and you say that concrete reason.
+- Antigravity and Cursor are both unavailable, or the same tooling failure repeats, and you say that concrete reason.
 
 "I could write this faster myself" is not a reason.
 
-When you do take a substantive exception, say why you bypassed Antigravity.
+When Antigravity fails, try `delegate_cursor` before taking a substantive exception. When you do implement yourself, say why both engineers were bypassed.
 
 ## Contract
 

@@ -28,7 +28,7 @@ MCP lets the Team Lead call the implementation model. The policy file decides wh
 
 | Piece | What it contributes |
 | --- | --- |
-| MCP bridge | Capability: `delegate_antigravity`, `apply_delegation`, `discard_delegation` |
+| MCP bridge | Capability: `delegate_antigravity`, `apply_delegation`, `discard_delegation`; fallback `delegate_cursor` |
 | `AGENTS.md` or `CLAUDE.md` | Policy |
 | Model | Reasoning |
 | Repository and tests | Evidence |
@@ -57,7 +57,7 @@ Two presets are included:
 
 Supporting roles are not a ladder. Discovery, design, review, and trivial edits stay separate jobs. AEO installs them under namespaced ids (`aeo_explorer`, `aeo_architect`, `aeo_reviewer`, `aeo_fast_worker` on Codex; `aeo-explorer`, `aeo-architect`, `aeo-reviewer`, `aeo-fast-worker` on Claude) so they do not replace agents you already have. Antigravity implements. The Team Lead decides.
 
-The roles are Team Lead and Implementation Engineer. The current mapping is Implementation Engineer to Gemini via the Antigravity CLI, exposed as `delegate_antigravity`. A later preset can map that same role to another CLI or MCP-backed coding model by adding a bridge and naming the tool in the policy. That mapping is the reference implementation in this repository. It is not a claim that Gemini is the lowest-cost provider for every account. Until the policy names a different tool, substantive implementation goes to `delegate_antigravity`.
+The roles are Team Lead and Implementation Engineer. Substantive implementation goes to Gemini via Antigravity (`delegate_antigravity`) by default. When Antigravity cannot run, the policy falls back to Cursor via `delegate_cursor` on `aeo-cursor` with the same contract and quality gate—not to ad hoc Team Lead implementation. See [bridge/cursor-mcp](bridge/cursor-mcp/README.md).
 
 Details and a second diagram are in [docs/architecture.md](docs/architecture.md). The four workflow figures are in [diagrams/architecture.md](diagrams/architecture.md).
 
@@ -137,6 +137,10 @@ agy -p "Reply with the single word ready." --mode accept-edits --output-format j
 ```
 
 The bridge calls `agy` with `--mode accept-edits`, `--output-format json`, and `--print-timeout 15m`. It kills the process at 16 minutes. Set the client tool timeout higher than that. The Codex example uses 1200 seconds. A current `agy --help` shows an unset print timeout of `0s` (wait until the turn finishes), so the bridge sets the limit itself. Worktree isolation (`isolation: "worktree"`) runs the engineer in a detached worktree for parallel delegations, applied via `apply_delegation` and cleaned up with `discard_delegation`.
+
+## Cursor bridge (fallback)
+
+[bridge/cursor-mcp](bridge/cursor-mcp/README.md) exposes `delegate_cursor` for the same Implementation Engineer contract when Antigravity is unavailable. Register `aeo-cursor` manually (see the bridge README and [presets/claude/mcp-entry.cursor.example.json](presets/claude/mcp-entry.cursor.example.json)). The installer copies only the Antigravity bridge today.
 
 ## What installation changes
 

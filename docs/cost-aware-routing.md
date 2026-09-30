@@ -41,7 +41,9 @@ Keep the Team Lead on:
 
 ## Where implementation goes
 
-In these presets, substantive implementation goes to the Implementation Engineer. That role is currently Gemini through Antigravity:
+In these presets, substantive implementation goes to the Implementation Engineer. The default path is Gemini through Antigravity (`delegate_antigravity`). When Antigravity is unavailable (quota, auth, or CLI failure), the policy routes the same contract to Cursor through `delegate_cursor` on `aeo-cursor` instead of keeping the work on the Team Lead model.
+
+That covers:
 
 - features and behavioral bug fixes;
 - refactors and multi-file edits;
@@ -49,7 +51,7 @@ In these presets, substantive implementation goes to the Implementation Engineer
 - tests that lock behavior;
 - revisions after review.
 
-A future preset can map the same role to another CLI or MCP-backed coding model. The policy file names the tool. The bridge in this repository implements the current tool, `delegate_antigravity`.
+The policy file names the tools. This repository ships bridges for `delegate_antigravity` and `delegate_cursor`.
 
 Discovery can stay on a lower-effort path. Explorer is a read-only lookup. Architect is reserved for a design decision that would be expensive to get wrong. Reviewer is reserved for a challenge that might change the decision. fast-worker is only a trivial mechanical edit. If fast-worker starts making product decisions, that path has been stretched into the wrong job. Stop and delegate to the Implementation Engineer.
 

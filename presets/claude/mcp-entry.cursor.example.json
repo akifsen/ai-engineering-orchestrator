@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "aeo-cursor": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "<PROJECT>/.aeo/bridge/cursor-mcp/index.js"
+      ]
+    }
+  }
+}
