@@ -2,7 +2,7 @@
 
 This process lets a Team Lead call the Cursor Agent CLI as a secondary Implementation Engineer and as a parallel peer for worktree-isolated delegations. It is an MCP stdio server with `delegate_cursor`, `apply_delegation`, and `discard_delegation`.
 
-Use it when Antigravity is unavailable (quota, auth, or CLI failure) per the orchestration policy. The bridge does not approve work, measure cost, or choose routing by itself.
+Per the orchestration policy, use it when Antigravity is unavailable (quota, auth, or CLI failure), or alongside Antigravity for parallel worktree-isolated delegations on independent scopes. The bridge does not approve work, measure cost, or choose routing by itself.
 
 ## What the tool does
 
