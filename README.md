@@ -140,7 +140,7 @@ The bridge calls `agy` with `--mode accept-edits`, `--output-format json`, and `
 
 ## Cursor bridge (fallback)
 
-[bridge/cursor-mcp](bridge/cursor-mcp/README.md) exposes `delegate_cursor` for the same Implementation Engineer contract when Antigravity is unavailable. Register `aeo-cursor` manually (see the bridge README and [presets/claude/mcp-entry.cursor.example.json](presets/claude/mcp-entry.cursor.example.json)). The installer copies only the Antigravity bridge today.
+[bridge/cursor-mcp](bridge/cursor-mcp/README.md) exposes `delegate_cursor` for the same Implementation Engineer contract when Antigravity is unavailable. Register `aeo-cursor` manually (see the bridge README, [presets/claude/mcp-entry.cursor.example.json](presets/claude/mcp-entry.cursor.example.json), and [presets/codex/mcp-entry.cursor.example.toml](presets/codex/mcp-entry.cursor.example.toml)). The installer copies only the Antigravity bridge today.
 
 ## What installation changes
 

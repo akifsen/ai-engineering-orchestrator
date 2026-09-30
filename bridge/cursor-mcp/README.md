@@ -86,7 +86,7 @@ Run a one-line delegation in a temp git repo and confirm the outcome (see projec
 ## Environment
 
 | Variable | Meaning |
-| --- | --- | --- |
+| --- | --- |
 | `CURSOR_AGENT_BIN` | Override executable or `index.js` path. |
 | `AEO_CURSOR_MODEL` | Default model slug (default `composer-2.5`). |
 | `AEO_CURSOR_TIMEOUT_MINUTES` | Default timeout minutes, 1..120 (default 30). |
@@ -103,6 +103,10 @@ Do not commit local paths. Export variables in the environment of the process th
 ## Claude registration (manual)
 
 The installer does not register this server yet. Add an entry next to `aeo-antigravity` using [mcp-entry.cursor.example.json](../../presets/claude/mcp-entry.cursor.example.json). Server name `aeo-cursor`, permission `mcp__aeo-cursor__delegate_cursor`.
+
+## Codex registration (manual)
+
+Merge [mcp-entry.cursor.example.toml](../../presets/codex/mcp-entry.cursor.example.toml) into `<project>/.codex/config.toml`, outside the AEO managed block. Keep `tool_timeout_sec` above the bridge hard kill (`timeoutMinutes` + 1 minute, plus a 10 second grace).
 
 ## Layout
 
