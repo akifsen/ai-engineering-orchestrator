@@ -21,7 +21,7 @@ A future mapping can send the same Implementation Engineer role to another CLI o
 | Architect | Design reasoning when the blast radius justifies it. Installed as `aeo_architect` or `aeo-architect`. |
 | Reviewer | An independent challenge. No approval power. Installed as `aeo_reviewer` or `aeo-reviewer`. |
 | fast-worker | A trivial mechanical edit only. Installed as `aeo_fast_worker` or `aeo-fast-worker`. |
-| MCP bridge | The capability that lets the Team Lead call Antigravity (`delegate_antigravity`), apply isolated patches (`apply_delegation`), and clean up worktrees (`discard_delegation`). The server id is `aeo-antigravity`. |
+| MCP bridge | The capability that lets the Team Lead call Antigravity (`delegate_antigravity` on `aeo-antigravity`) or Cursor (`delegate_cursor` on `aeo-cursor`), apply isolated patches (`apply_delegation`), and clean up worktrees (`discard_delegation` on the server that created the delegation). |
 | Policy | Codex: an AEO block in the project `AGENTS.md`. Claude: `.claude/rules/aeo-orchestration.md`. Existing `AGENTS.md` and `CLAUDE.md` text stays. |
 | Repository and tests | The evidence used at the quality gate. |
 

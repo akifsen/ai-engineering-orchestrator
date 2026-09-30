@@ -11,7 +11,7 @@
 command = "node"
 args = ["<PROJECT>/.aeo/bridge/cursor-mcp/index.js"]
 enabled = true
-enabled_tools = ["delegate_cursor"]
+enabled_tools = ["delegate_cursor", "apply_delegation", "discard_delegation"]
 startup_timeout_sec = 30
 tool_timeout_sec = 1920
 default_tools_approval_mode = "approve"

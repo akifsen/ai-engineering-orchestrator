@@ -1,6 +1,6 @@
 # Cursor MCP bridge
 
-This process lets a Team Lead call the Cursor Agent CLI as a secondary Implementation Engineer. It is an MCP stdio server with one tool: `delegate_cursor`.
+This process lets a Team Lead call the Cursor Agent CLI as a secondary Implementation Engineer and as a parallel peer for worktree-isolated delegations. It is an MCP stdio server with `delegate_cursor`, `apply_delegation`, and `discard_delegation`.
 
 Use it when Antigravity is unavailable (quota, auth, or CLI failure) per the orchestration policy. The bridge does not approve work, measure cost, or choose routing by itself.
 
@@ -14,6 +14,8 @@ Use it when Antigravity is unavailable (quota, auth, or CLI failure) per the orc
 | `cwd` | yes | Absolute path of the repository to inspect and edit. |
 | `model` | no | Cursor model slug. Default `composer-2.5` (overridable via `AEO_CURSOR_MODEL`). |
 | `timeoutMinutes` | no | Hard timeout 1..120 minutes for this call. Default from `AEO_CURSOR_TIMEOUT_MINUTES` or 30. |
+| `isolation` | no | `none` or `worktree`. Default `none` edits `cwd` in place. `worktree` runs the engineer in a bridge-owned detached git worktree. |
+| `delegationId` | no | 10-character hexadecimal ID. With isolation `worktree`, revise an existing isolated delegation in its existing worktree. |
 
 The bridge rejects a relative path, a missing path, and a path that is not a directory. It then starts the Cursor Agent without a shell, writes the wrapped prompt to the child's stdin, and passes:
 
@@ -35,7 +37,12 @@ Stdout of this MCP process is protocol only. Diagnostics, including `cursor-mcp:
 
 ## Worktree isolation
 
-Not supported in this version. Parallel Cursor delegations need non-overlapping file scopes or separate clones. The Cursor CLI exposes `--worktree` for possible future bridge support.
+Parallel delegations must use `isolation: "worktree"` with non-overlapping file scopes so delegations do not touch the main working tree or each other. Cursor runs with spawn `cwd` and `--workspace` set to the bridge-owned worktree path (same layout and default root as the Antigravity bridge under `%TEMP%\\aeo-antigravity` or `AEO_WORKTREE_ROOT`).
+
+- **`apply_delegation`**: takes `cwd` and `delegationId`. Applies the patch to the main working tree as unstaged changes after `git apply --check`. Call it on **`aeo-cursor`** for delegations created with `delegate_cursor` on that server.
+- **`discard_delegation`**: removes the bridge-owned worktree and patch. Never touches the main working tree.
+- **Busy guard**: concurrent revisions, applies, or discards for the same delegation ID return `validation_failure` while a delegation run is in progress.
+- **Manual recovery**: `git worktree list` and `git worktree prune` for abandoned entries.
 
 ## Results
 
@@ -47,6 +54,12 @@ Not supported in this version. Parallel Cursor delegations need non-overlapping 
 | `cli_failure` | Process did not complete a run (missing binary, non-zero exit, invalid JSON). |
 | `timeout` | Bridge hard timeout stopped the process. |
 | `validation_failure` | Arguments rejected before starting. |
+| `applied` | Patch applied to the main working tree as unstaged changes. Not approval. |
+| `no_changes` | Isolated delegation produced no file changes to apply. |
+| `apply_conflict` | Main tree moved or overlaps since the base commit. |
+| `apply_error` | Failed to apply the patch. |
+| `discarded` | Worktree and patch removed. |
+| `discard_error` | Failed to remove the worktree or clean up delegation resources. |
 
 Execution metadata includes `model`, `duration_ms`, `session_id`, and `usage` when the CLI sends them.
 
@@ -102,7 +115,7 @@ Do not commit local paths. Export variables in the environment of the process th
 
 ## Claude registration (manual)
 
-The installer does not register this server yet. Add an entry next to `aeo-antigravity` using [mcp-entry.cursor.example.json](../../presets/claude/mcp-entry.cursor.example.json). Server name `aeo-cursor`, permission `mcp__aeo-cursor__delegate_cursor`.
+The installer does not register this server yet. Add an entry next to `aeo-antigravity` using [mcp-entry.cursor.example.json](../../presets/claude/mcp-entry.cursor.example.json). Server name `aeo-cursor`, permissions `mcp__aeo-cursor__delegate_cursor`, `mcp__aeo-cursor__apply_delegation`, and `mcp__aeo-cursor__discard_delegation`.
 
 ## Codex registration (manual)
 
@@ -111,6 +124,7 @@ Merge [mcp-entry.cursor.example.toml](../../presets/codex/mcp-entry.cursor.examp
 ## Layout
 
 - `index.js` — stdio server entry.
-- `lib/delegate.js` — validation, spawn, stdin prompt, result classification.
+- `lib/delegate.js` — validation, spawn, stdin prompt, worktree isolation, result classification.
+- `lib/worktree.js` — bridge-owned git worktrees and patches (kept in sync with antigravity-mcp).
 - `lib/server.js` — MCP tool registration.
 - `test/` — automated checks without a live model.
