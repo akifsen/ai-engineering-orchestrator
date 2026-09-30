@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AEO_VERSION = "1.0.0";
+export const AEO_VERSION = "1.1.0";
 export const AGENTS_BEGIN = "<!-- AEO:BEGIN ORCHESTRATION -->";
 export const AGENTS_END = "<!-- AEO:END ORCHESTRATION -->";
 export const CONFIG_BEGIN = "# >>> AEO MANAGED CONFIG BEGIN";

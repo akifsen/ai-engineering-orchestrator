@@ -1,6 +1,6 @@
 {
   "name": "antigravity-mcp-bridge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "MCP bridge that delegates bounded implementation work to the Antigravity CLI.",
   "type": "module",
