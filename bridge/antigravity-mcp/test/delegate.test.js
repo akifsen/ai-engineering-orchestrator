@@ -1355,8 +1355,12 @@ test("two concurrent worktree delegations with same cwd -> distinct delegation i
         assert.notEqual(res1.delegation.worktreePath, res2.delegation.worktreePath);
         assert.equal(calls.length, 2);
         assert.notEqual(calls[0].options.cwd, calls[1].options.cwd);
-        assert.equal(calls[0].options.cwd, res1.delegation.worktreePath);
-        assert.equal(calls[1].options.cwd, res2.delegation.worktreePath);
+        // Spawn order is not guaranteed to match call order: async I/O between
+        // createWorktree and spawn can let the second delegation spawn first.
+        assert.deepEqual(
+            calls.map((call) => call.options.cwd).sort(),
+            [res1.delegation.worktreePath, res2.delegation.worktreePath].sort()
+        );
     } finally {
         await rm(directory, { recursive: true, force: true });
     }

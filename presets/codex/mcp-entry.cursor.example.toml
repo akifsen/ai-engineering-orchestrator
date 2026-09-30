@@ -1,0 +1,17 @@
+# Manual fragment. Merge this table into <project>/.codex/config.toml,
+# outside the AEO managed config block. The installer does not copy the
+# Cursor bridge or register this server yet.
+# Replace <PROJECT> with the target project path, using forward slashes.
+#
+# tool_timeout_sec must exceed the bridge hard kill: timeoutMinutes + 1 minute
+# (default 31 minutes) plus a 10 second termination grace. Raise it if you pass
+# a larger timeoutMinutes or set AEO_CURSOR_TIMEOUT_MINUTES.
+
+[mcp_servers.aeo-cursor]
+command = "node"
+args = ["<PROJECT>/.aeo/bridge/cursor-mcp/index.js"]
+enabled = true
+enabled_tools = ["delegate_cursor"]
+startup_timeout_sec = 30
+tool_timeout_sec = 1920
+default_tools_approval_mode = "approve"
