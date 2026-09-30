@@ -57,7 +57,7 @@ These are different jobs, not steps on one ladder.
 | aeo_reviewer | Challenge and review |
 | Team Lead | Decide and approve |
 
-The Implementation Engineer role is filled by Gemini through Antigravity (`delegate_antigravity`). Cursor through `aeo-cursor` / `delegate_cursor` is the secondary fallback when Antigravity cannot run. Do not treat another agent as the implementation owner.
+The Implementation Engineer role is filled by Gemini through Antigravity (`delegate_antigravity`). Cursor through `aeo-cursor` / `delegate_cursor` is the secondary fallback when Antigravity cannot run, and a parallel peer for worktree-isolated delegations on independent scopes (see Parallel delegation). Do not treat another agent as the implementation owner.
 
 ## Trivial and substantive
 
@@ -142,7 +142,7 @@ Default sequential delegation edits `cwd` in place (isolation omitted or `"none"
 
 Parallel delegations are allowed only when each has an explicit file scope that does not overlap any other parallel delegation's scope or the user's uncommitted changes. If scopes cannot be stated as non-overlapping, delegate sequentially instead.
 
-Every parallel delegation must pass `isolation: "worktree"`. The bridge creates and removes the worktree; Antigravity never does git worktree or branch operations; the Team Lead does not run `git worktree` or `git apply` itself.
+Parallel delegations may be split between Antigravity (`aeo-antigravity` / `delegate_antigravity`) and Cursor (`aeo-cursor` / `delegate_cursor`) to run independent scopes concurrently. Every parallel delegation of either engineer must pass `isolation: "worktree"`. Call `apply_delegation` and `discard_delegation` on the same MCP server that created the delegation. The bridge creates and removes the worktree; the implementation engineer never does git worktree or branch operations; the Team Lead does not run `git worktree` or `git apply` itself.
 
 A worktree starts from the committed HEAD. It does not contain the main tree's uncommitted changes or untracked dependencies such as `node_modules`, so engineer-side test runs there may be incomplete. Name which verification the engineer may run and expect blocked or partial results. Authoritative verification happens in the main tree after apply.
 
@@ -150,7 +150,7 @@ Nothing lands in the main tree until `apply_delegation`. Review each delegation'
 
 Apply one delegation at a time. After each apply: read `git status --short` and the diff in the main tree, run the relevant tests there, and decide APPROVED or CHANGES REQUIRED before applying the next one.
 
-`apply_conflict` means the main tree moved or overlaps since the base commit. It is not a revision. Discard and re-delegate against the current HEAD, or reconcile manually. Never ask Antigravity to rebase or merge. Applying the same delegation twice also returns `apply_conflict`.
+`apply_conflict` means the main tree moved or overlaps since the base commit. It is not a revision. Discard and re-delegate against the current HEAD, or reconcile manually. Never ask the engineer to rebase or merge. Applying the same delegation twice also returns `apply_conflict`.
 
 A revision of an isolated delegation passes the same `delegationId` so the engineer continues in the same worktree. Do not run two delegations against the same `delegationId` at the same time.
 
@@ -272,7 +272,7 @@ Do not commit, push, reset, rebase, merge, or rewrite history unless the user ex
 
 `git worktree add`, `git worktree remove`, and `git apply` run only inside the bridge tools; they do not commit, push, reset, rebase, merge, or rewrite history, and they are the only git writes the orchestration performs. The Team Lead still must not run them directly.
 
-Antigravity is under the same restriction. If a diff changes `.git` metadata or history, stop and tell the user. Bridge-owned worktree admin entries under `.git/worktrees` are the only expected exception.
+The implementation engineer is under the same restriction. If a diff changes `.git` metadata or history, stop and tell the user. Bridge-owned worktree admin entries under `.git/worktrees` are the only expected exception.
 
 ## Final authority
 
