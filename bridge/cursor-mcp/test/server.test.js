@@ -90,7 +90,7 @@ test("stdio server starts and exposes delegate_cursor, apply_delegation, and dis
             capabilities: {},
             clientInfo: {
                 name: "cursor-mcp-test",
-                version: "1.1.0"
+                version: "1.2.0"
             }
         }
     })}\n`);

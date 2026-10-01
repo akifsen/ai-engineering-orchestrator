@@ -128,4 +128,4 @@ jobs:
           EOF
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public

@@ -90,7 +90,7 @@ test("stdio server starts and exposes delegate_antigravity, apply_delegation, an
             capabilities: {},
             clientInfo: {
                 name: "antigravity-mcp-test",
-                version: "1.1.0"
+                version: "1.2.0"
             }
         }
     })}\n`);
