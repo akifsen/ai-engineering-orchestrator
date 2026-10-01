@@ -1,12 +1,17 @@
 import { spawn } from "node:child_process";
 import { defaultNpmCi } from "./npm-ci.mjs";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { access, chmod, constants, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AEO_VERSION = "1.1.0";
+const rootPackage = JSON.parse(readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8"));
+if (typeof rootPackage.version !== "string" || rootPackage.version.trim() === "") {
+    throw new Error("AEO package.json is missing a version.");
+}
+export const AEO_VERSION = rootPackage.version;
 export const AGENTS_BEGIN = "<!-- AEO:BEGIN ORCHESTRATION -->";
 export const AGENTS_END = "<!-- AEO:END ORCHESTRATION -->";
 export const CONFIG_BEGIN = "# >>> AEO MANAGED CONFIG BEGIN";
@@ -42,13 +47,15 @@ const CLAUDE_AGENTS = [
     "aeo-fast-worker.md"
 ];
 
+// Modules the copied bridge imports. The target runs npm ci from the copied lockfile.
 const BRIDGE_FILES = [
     "package.json",
     "package-lock.json",
     "index.js",
     "README.md",
     "lib/delegate.js",
-    "lib/server.js"
+    "lib/server.js",
+    "lib/worktree.js"
 ];
 
 const BRIDGE_DIR = ".aeo/bridge/antigravity-mcp";

@@ -14,24 +14,42 @@ It also does not mark a Codex project trusted. Codex loads `<project>/.codex/con
 
 ## Installer
 
-From this repository:
+From npm, without cloning the repository:
 
 ```bash
-node scripts/aeo.mjs install --target C:/path/to/project --codex --claude --dry-run
-node scripts/aeo.mjs install --target C:/path/to/project --codex --claude
-node scripts/aeo.mjs update --target C:/path/to/project --codex --claude
-node scripts/aeo.mjs update --target C:/path/to/project --codex --claude --force-managed-update
-node scripts/aeo.mjs status --target C:/path/to/project
-node scripts/aeo.mjs doctor --target C:/path/to/project
-node scripts/aeo.mjs uninstall --target C:/path/to/project
-node scripts/aeo.mjs uninstall --target C:/path/to/project --force-remove-modified
+npx ai-engineering-orchestrator@latest install --target . --codex --dry-run
+npx ai-engineering-orchestrator@latest install --target . --codex
+npx ai-engineering-orchestrator@latest install --target . --claude
+npx ai-engineering-orchestrator@latest install --target . --codex --claude
+npx ai-engineering-orchestrator@latest update --target . --codex --claude
+npx ai-engineering-orchestrator@latest update --target . --codex --claude --force-managed-update
+npx ai-engineering-orchestrator@latest status --target .
+npx ai-engineering-orchestrator@latest doctor --target .
+npx ai-engineering-orchestrator@latest uninstall --target .
+npx ai-engineering-orchestrator@latest uninstall --target . --force-remove-modified
+```
+
+A global CLI install is optional. It still defaults to the target project. `--global` is what edits user-level Codex and Claude config.
+
+```bash
+npm install -g ai-engineering-orchestrator
+aeo install --target . --codex
+aeo doctor --target .
 ```
 
 `--dry-run` prints creates, preserved files, managed-block merges, JSON merges, unchanged files, safe updates, user-modified files, conflicts, and backups. It writes nothing. Use it first.
 
 Pass `--codex`, `--claude`, or both. The command stops if you pass neither.
 
-`install.ps1` and `install.sh` forward arguments to `node scripts/aeo.mjs`.
+### Development / Install from source
+
+From a clone, `install.ps1` and `install.sh` forward arguments to `node scripts/aeo.mjs`:
+
+```bash
+node scripts/aeo.mjs install --target C:/path/to/project --codex --claude --dry-run
+node scripts/aeo.mjs install --target C:/path/to/project --codex --claude
+node scripts/aeo.mjs doctor --target C:/path/to/project
+```
 
 Before AEO changes a shared file that already exists, it copies that file to `~/.aeo/backups/<project-id>/<timestamp>/`. A forced replacement of a drifted AEO-owned file is backed up there too. Unchanged files are not backed up. The project id is a hash of the project path, not the path itself. Uninstall does not copy a backup back over the project. Recovery from a backup is manual.
 
@@ -42,11 +60,11 @@ If `npm ci` fails while installing the bridge, MCP configuration is not activate
 AEO supports a user-scope `--global` mode for configuring user-level Codex and Claude environments across projects:
 
 ```bash
-node scripts/aeo.mjs install --global --codex --claude --dry-run
-node scripts/aeo.mjs install --global --codex --claude
-node scripts/aeo.mjs update --global --codex --claude
-node scripts/aeo.mjs doctor --global
-node scripts/aeo.mjs uninstall --global
+npx ai-engineering-orchestrator@latest install --global --codex --claude --dry-run
+npx ai-engineering-orchestrator@latest install --global --codex --claude
+npx ai-engineering-orchestrator@latest update --global --codex --claude
+npx ai-engineering-orchestrator@latest doctor --global
+npx ai-engineering-orchestrator@latest uninstall --global
 ```
 
 Pass either `--target <project>` or `--global`, not both.
@@ -227,4 +245,4 @@ Pack the tracked files:
 git archive --format=zip --prefix=ai-engineering-orchestrator/ -o aeo-source.zip HEAD
 ```
 
-`git archive` does not delete local dependencies. It includes only files Git tracks, so the archive leaves out ignored `node_modules/`, `.env` files, logs, temporary files, local credentials and auth, and IDE or runtime junk such as `.idea/`, `.vscode/`, and editor swap files. Recovery backups live under `~/.aeo/backups/` and are outside this repository. Keep `package.json` and `package-lock.json`. There is no separate packaging script.
+`git archive` does not delete local dependencies. It includes only files Git tracks, so the archive leaves out ignored `node_modules/`, `.env` files, logs, temporary files, local credentials and auth, and IDE or runtime junk such as `.idea/`, `.vscode/`, and editor swap files. Recovery backups live under `~/.aeo/backups/` and are outside this repository. Keep each bridge `package.json` and `package-lock.json`. The public install is the npm package described by the root `package.json` `files` list. `npm pack` is the package check; it is not a second installer.

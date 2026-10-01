@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+
+const packageVersion = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")).version;
 
 import {
     applyDelegation,
@@ -23,7 +27,7 @@ export function createServer() {
     const server = new McpServer(
         {
             name: "antigravity-mcp",
-            version: "1.1.0"
+            version: packageVersion
         },
         {
             instructions

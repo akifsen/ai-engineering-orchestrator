@@ -22,7 +22,7 @@ Do not commit API keys, OAuth state, or a filled-in `settings.json`. Example fra
 
 ## Tests
 
-Bridge behavior is covered by `npm test` in `bridge/antigravity-mcp`. Installer preservation is covered by `node --test scripts/test` from the repository root. Run the bridge tests when you change spawn flags, timeouts, result classification, or the MCP schema. Run the installer tests when you change install, uninstall, or config merging.
+`npm test` from the repository root runs the installer tests, both bridge suites, and the npm package checks. It does not need Antigravity or Cursor credentials. Run the bridge tests when you change spawn flags, timeouts, result classification, or the MCP schema. Run the installer tests when you change install, uninstall, or config merging. Run `npm run pack:check` when you change published files or path resolution.
 
 A routing change is a documentation change plus a policy change. Update the affected doc, the diagram if the flow changed, and the smoke test if the pass condition changed. Do not claim cost numbers, failover, or telemetry that the code does not implement.
 

@@ -1,0 +1,131 @@
+# Publish only from an explicit version tag on a GitHub-hosted runner.
+# Authentication is npm Trusted Publishing (OIDC). Do not add NPM_TOKEN.
+#
+# Before the first successful publish, configure this on npmjs.com:
+#   Package settings → Trusted Publisher → GitHub Actions
+#   Organization or user: akifsen
+#   Repository: ai-engineering-orchestrator
+#   Workflow filename: publish.yml
+#   Environment name: leave empty unless this file sets the same environment
+#   Allowed action: npm publish
+# npm cannot attach a trusted publisher until the package exists. The first
+# version of a brand-new package still needs one manual publish, or whatever
+# pending-publisher flow npm offers at that time. Later tags use this workflow.
+# Trusted publishing needs npm CLI >= 11.5.1 and Node.js >= 22.14.0.
+# Provenance is generated automatically for a public package from a public repo.
+
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Require the trusted-publishing Node baseline
+        run: |
+          node --input-type=module <<'EOF'
+          const [major, minor] = process.versions.node.split(".").map(Number);
+          if (major < 22 || (major === 22 && minor < 14)) {
+              console.error(`Node.js ${process.versions.node} is older than 22.14.0.`);
+              process.exit(1);
+          }
+          EOF
+
+      - name: Install an npm release that supports trusted publishing
+        run: npm install -g npm@11.5.1
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Run credential-free tests and package checks
+        run: npm test
+
+      - name: Require the tag to match every canonical version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'EOF'
+          import { readFileSync } from "node:fs";
+          import { AEO_VERSION } from "./scripts/lib/installer.mjs";
+
+          const tag = process.env.RELEASE_TAG || "";
+          const version = tag.startsWith("v") ? tag.slice(1) : "";
+          if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(version)) {
+              console.error(`Refusing to publish from ${tag}. Use a stable vX.Y.Z tag.`);
+              process.exit(1);
+          }
+          const root = JSON.parse(readFileSync("package.json", "utf8"));
+          const compared = [
+              ["package.json", root.version],
+              ["AEO_VERSION", AEO_VERSION]
+          ];
+          if (root.name !== "ai-engineering-orchestrator") {
+              console.error(`Unexpected package name ${root.name}.`);
+              process.exit(1);
+          }
+          for (const directory of ["bridge/antigravity-mcp", "bridge/cursor-mcp"]) {
+              const pkg = JSON.parse(readFileSync(`${directory}/package.json`, "utf8"));
+              const lock = JSON.parse(readFileSync(`${directory}/package-lock.json`, "utf8"));
+              compared.push(
+                  [`${directory}/package.json`, pkg.version],
+                  [`${directory}/package-lock.json`, lock.version],
+                  [`${directory}/package-lock.json packages`, lock.packages?.[""]?.version]
+              );
+          }
+          for (const [label, value] of compared) {
+              if (value !== version) {
+                  console.error(`${label} is ${value}, tag ${tag} requires ${version}.`);
+                  process.exit(1);
+              }
+          }
+          EOF
+
+      - name: Refuse to republish an existing version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'EOF'
+          import { spawnSync } from "node:child_process";
+
+          const version = (process.env.RELEASE_TAG || "").replace(/^v/, "");
+          const result = spawnSync("npm", ["view", `ai-engineering-orchestrator@${version}`, "version", "--json"], {
+              encoding: "utf8"
+          });
+          const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+          if (result.status !== 0) {
+              if (/E404/.test(output)) {
+                  console.log(`ai-engineering-orchestrator@${version} is not on npm yet.`);
+                  process.exit(0);
+              }
+              console.error(output);
+              process.exit(result.status || 1);
+          }
+          console.error(`Refusing to publish ${version}; npm already has it.`);
+          console.error(output);
+          process.exit(1);
+          EOF
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance

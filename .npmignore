@@ -1,0 +1,15 @@
+.git
+.github
+scripts/test
+bridge/antigravity-mcp/test
+bridge/cursor-mcp/test
+bridge/**/node_modules
+node_modules
+**/.env
+**/.env.*
+**/.npmrc
+.codex
+.claude
+.gemini
+tmp
+*.log
