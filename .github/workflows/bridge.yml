@@ -57,7 +57,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
-      - run: node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js scripts/test/versions.test.js
+      - run: node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js scripts/test/versions.test.js scripts/test/release-publish.test.js
 
   npm-package:
     runs-on: ${{ matrix.os }}

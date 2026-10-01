@@ -1,18 +1,28 @@
 # Publish only from an explicit version tag on a GitHub-hosted runner.
-# Authentication is npm Trusted Publishing (OIDC). Do not add NPM_TOKEN.
+# Authentication is npm Trusted Publishing (OIDC). Do not use a long-lived npm token.
 #
-# Before the first successful publish, configure this on npmjs.com:
-#   Package settings → Trusted Publisher → GitHub Actions
-#   Organization or user: akifsen
-#   Repository: ai-engineering-orchestrator
-#   Workflow filename: publish.yml
-#   Environment name: leave empty unless this file sets the same environment
-#   Allowed action: npm publish
-# npm cannot attach a trusted publisher until the package exists. The first
-# version of a brand-new package still needs one manual publish, or whatever
-# pending-publisher flow npm offers at that time. Later tags use this workflow.
+# FIRST RELEASE ONLY:
+# 1. Publish the first package version manually with interactive npm 2FA.
+#    Do not request CI provenance for that manual publish. It has none.
+# 2. Configure the npm Trusted Publisher for this workflow:
+#    Organization or user: akifsen
+#    Repository: ai-engineering-orchestrator
+#    Workflow filename: publish.yml
+#    Environment name: leave empty
+#    Allowed action: npm publish
+# 3. Push the matching release tag.
+# 4. This workflow verifies that the already-published artifact is byte-identical
+#    and exits successfully without publishing again.
+#
+# FUTURE RELEASES:
+# 1. Push vX.Y.Z.
+# 2. GitHub Actions validates everything.
+# 3. Trusted Publishing publishes the new version automatically.
+#    npm generates provenance for a public package from this public repository.
+#
 # Trusted publishing needs npm CLI >= 11.5.1 and Node.js >= 22.14.0.
-# Provenance is generated automatically for a public package from a public repo.
+# An existing version succeeds only when dist.integrity and dist.shasum both match
+# the tarball packed from this tag. Different bytes under the same version fail.
 
 name: publish
 
@@ -65,67 +75,15 @@ jobs:
       - name: Require the tag to match every canonical version
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          node --input-type=module <<'EOF'
-          import { readFileSync } from "node:fs";
-          import { AEO_VERSION } from "./scripts/lib/installer.mjs";
+        run: node scripts/check-release-tag.mjs
 
-          const tag = process.env.RELEASE_TAG || "";
-          const version = tag.startsWith("v") ? tag.slice(1) : "";
-          if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(version)) {
-              console.error(`Refusing to publish from ${tag}. Use a stable vX.Y.Z tag.`);
-              process.exit(1);
-          }
-          const root = JSON.parse(readFileSync("package.json", "utf8"));
-          const compared = [
-              ["package.json", root.version],
-              ["AEO_VERSION", AEO_VERSION]
-          ];
-          if (root.name !== "ai-engineering-orchestrator") {
-              console.error(`Unexpected package name ${root.name}.`);
-              process.exit(1);
-          }
-          for (const directory of ["bridge/antigravity-mcp", "bridge/cursor-mcp"]) {
-              const pkg = JSON.parse(readFileSync(`${directory}/package.json`, "utf8"));
-              const lock = JSON.parse(readFileSync(`${directory}/package-lock.json`, "utf8"));
-              compared.push(
-                  [`${directory}/package.json`, pkg.version],
-                  [`${directory}/package-lock.json`, lock.version],
-                  [`${directory}/package-lock.json packages`, lock.packages?.[""]?.version]
-              );
-          }
-          for (const [label, value] of compared) {
-              if (value !== version) {
-                  console.error(`${label} is ${value}, tag ${tag} requires ${version}.`);
-                  process.exit(1);
-              }
-          }
-          EOF
+      - name: Pack the release artifact once
+        env:
+          PACK_DESTINATION: ${{ runner.temp }}/aeo-npm-pack
+        run: node scripts/pack-release-artifact.mjs
 
-      - name: Refuse to republish an existing version
+      - name: Publish the packed artifact or accept an identical registry copy
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          node --input-type=module <<'EOF'
-          import { spawnSync } from "node:child_process";
-
-          const version = (process.env.RELEASE_TAG || "").replace(/^v/, "");
-          const result = spawnSync("npm", ["view", `ai-engineering-orchestrator@${version}`, "version", "--json"], {
-              encoding: "utf8"
-          });
-          const output = `${result.stdout || ""}\n${result.stderr || ""}`;
-          if (result.status !== 0) {
-              if (/E404/.test(output)) {
-                  console.log(`ai-engineering-orchestrator@${version} is not on npm yet.`);
-                  process.exit(0);
-              }
-              console.error(output);
-              process.exit(result.status || 1);
-          }
-          console.error(`Refusing to publish ${version}; npm already has it.`);
-          console.error(output);
-          process.exit(1);
-          EOF
-
-      - name: Publish to npm
-        run: npm publish --access public
+          PACK_DESTINATION: ${{ runner.temp }}/aeo-npm-pack
+        run: node scripts/publish-packed-release.mjs

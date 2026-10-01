@@ -33,7 +33,7 @@
   ],
   "scripts": {
     "test": "npm run test:installer && npm run test:antigravity && npm run test:cursor && npm run pack:check",
-    "test:installer": "node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js scripts/test/versions.test.js",
+    "test:installer": "node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js scripts/test/versions.test.js scripts/test/release-publish.test.js",
     "test:antigravity": "npm ci --prefix bridge/antigravity-mcp && npm test --prefix bridge/antigravity-mcp",
     "test:cursor": "npm ci --prefix bridge/cursor-mcp && npm test --prefix bridge/cursor-mcp",
     "pack:check": "node --test scripts/test/npm-pack.test.js"
