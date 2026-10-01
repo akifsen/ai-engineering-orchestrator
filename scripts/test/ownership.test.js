@@ -70,7 +70,7 @@ async function alternatePreset(edit) {
     const root = await mkdtemp(path.join(os.tmpdir(), "aeo-own-preset-"));
     await cp(path.join(repoRoot, "presets"), path.join(root, "presets"), { recursive: true });
     const bridgeDest = path.join(root, "bridge", "antigravity-mcp");
-    for (const relative of ["package.json", "package-lock.json", "index.js", "README.md", "lib/delegate.js", "lib/server.js"]) {
+    for (const relative of ["package.json", "package-lock.json", "index.js", "README.md", "lib/delegate.js", "lib/server.js", "lib/worktree.js"]) {
         await mkdir(path.dirname(path.join(bridgeDest, relative)), { recursive: true });
         await cp(path.join(repoRoot, "bridge", "antigravity-mcp", relative), path.join(bridgeDest, relative));
     }

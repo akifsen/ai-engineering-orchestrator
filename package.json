@@ -1,0 +1,63 @@
+{
+  "name": "ai-engineering-orchestrator",
+  "version": "1.2.0",
+  "description": "Project-scoped installer for cost-aware AI engineering orchestration with Codex, Claude, Antigravity, and Cursor.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "aeo": "./scripts/aeo.mjs"
+  },
+  "files": [
+    "scripts/aeo.mjs",
+    "scripts/lib/",
+    "presets/",
+    "bridge/antigravity-mcp/package.json",
+    "bridge/antigravity-mcp/package-lock.json",
+    "bridge/antigravity-mcp/index.js",
+    "bridge/antigravity-mcp/README.md",
+    "bridge/antigravity-mcp/lib/",
+    "bridge/cursor-mcp/package.json",
+    "bridge/cursor-mcp/package-lock.json",
+    "bridge/cursor-mcp/index.js",
+    "bridge/cursor-mcp/README.md",
+    "bridge/cursor-mcp/lib/",
+    "docs/",
+    "examples/",
+    "diagrams/",
+    "antigravity/settings.example.json",
+    "SECURITY.md",
+    "CONTRIBUTING.md"
+  ],
+  "scripts": {
+    "test": "npm run test:installer && npm run test:antigravity && npm run test:cursor && npm run pack:check",
+    "test:installer": "node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js scripts/test/versions.test.js",
+    "test:antigravity": "npm ci --prefix bridge/antigravity-mcp && npm test --prefix bridge/antigravity-mcp",
+    "test:cursor": "npm ci --prefix bridge/cursor-mcp && npm test --prefix bridge/cursor-mcp",
+    "pack:check": "node --test scripts/test/npm-pack.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akifsen/ai-engineering-orchestrator.git"
+  },
+  "homepage": "https://github.com/akifsen/ai-engineering-orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/akifsen/ai-engineering-orchestrator/issues"
+  },
+  "keywords": [
+    "ai",
+    "engineering",
+    "orchestrator",
+    "mcp",
+    "codex",
+    "claude",
+    "antigravity",
+    "cursor",
+    "agents"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

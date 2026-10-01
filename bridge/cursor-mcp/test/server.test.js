@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,6 +11,7 @@ const bridgeDirectory = path.resolve(
     ".."
 );
 const entrypoint = path.join(bridgeDirectory, "index.js");
+const packageVersion = JSON.parse(readFileSync(path.join(bridgeDirectory, "package.json"), "utf8")).version;
 
 class NdjsonReader {
     constructor(stream) {
@@ -88,7 +90,7 @@ test("stdio server starts and exposes delegate_cursor, apply_delegation, and dis
             capabilities: {},
             clientInfo: {
                 name: "cursor-mcp-test",
-                version: "1.1.0"
+                version: "1.2.0"
             }
         }
     })}\n`);
@@ -99,6 +101,7 @@ test("stdio server starts and exposes delegate_cursor, apply_delegation, and dis
         assert.equal(initialized.id, 1);
         assert.equal(initialized.error, undefined);
         assert.equal(initialized.result.serverInfo.name, "cursor-mcp");
+        assert.equal(initialized.result.serverInfo.version, packageVersion);
         assert.ok(initialized.result.instructions.toLowerCase().includes("parallel delegations must use isolation \"worktree\""));
         assert.ok(initialized.result.instructions.includes("apply_delegation"));
         assert.ok(initialized.result.instructions.includes("discard_delegation"));

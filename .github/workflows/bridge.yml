@@ -57,4 +57,21 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
-      - run: node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js
+      - run: node --test scripts/test/installer.test.js scripts/test/drift.test.js scripts/test/npm-ci.test.js scripts/test/release-fixture.test.js scripts/test/ownership.test.js scripts/test/cli.test.js scripts/test/global.test.js scripts/test/versions.test.js
+
+  npm-package:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+        include:
+          - os: macos-latest
+            node: 22
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm run pack:check

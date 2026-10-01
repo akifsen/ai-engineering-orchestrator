@@ -29,7 +29,7 @@ function option(name) {
 function usage() {
     return [
         "Usage:",
-        "  node scripts/aeo.mjs <install|update|uninstall|status|doctor>",
+        "  aeo <install|update|uninstall|status|doctor>",
         "    --target <project>",
         "    [--codex]",
         "    [--claude]",

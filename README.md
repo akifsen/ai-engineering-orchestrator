@@ -88,25 +88,52 @@ Model names in the Codex agent files are examples. Replace them with models your
 - An interactive `agy` login before headless runs
 - Codex or Claude Code for the Team Lead preset you want to use
 
-`npm test` in the bridge does not need `agy` credentials.
+`npm test` from the repository root, and `npm test` in each bridge, do not need `agy` or Cursor credentials.
 
 ## Quick start
 
-Run a dry-run before the install. AEO modifies Codex and Claude project configuration only inside the target project, and only AEO-owned names. Global Codex config and global Claude config are not modified unless `--global`. Recovery backups for shared files are stored separately under `~/.aeo/backups/<project-id>/<timestamp>/` (or `~/.aeo/backups/global/<timestamp>/` in global mode). Those backups are recovery material. Uninstall does not restore an older backup over newer user config.
+Install from npm. A normal install does not need a clone of this repository.
+
+Run a dry-run before the install. AEO modifies Codex and Claude project configuration only inside the target project, and only AEO-owned names. Global Codex config and global Claude config are not modified unless `--global`. `npm install -g` installs the `aeo` command; it does not turn on `--global`. Recovery backups for shared files are stored separately under `~/.aeo/backups/<project-id>/<timestamp>/` (or `~/.aeo/backups/global/<timestamp>/` in global mode). Those backups are recovery material. Uninstall does not restore an older backup over newer user config.
+
+Codex:
 
 ```bash
-# Project install
-node scripts/aeo.mjs install --target C:/path/to/project --codex --claude --dry-run
-node scripts/aeo.mjs install --target C:/path/to/project --codex --claude
-node scripts/aeo.mjs doctor --target C:/path/to/project
-
-# Global install (user scope)
-node scripts/aeo.mjs install --global --codex --claude --dry-run
-node scripts/aeo.mjs install --global --codex --claude
-node scripts/aeo.mjs doctor --global
+npx ai-engineering-orchestrator@latest install --target . --codex --dry-run
+npx ai-engineering-orchestrator@latest install --target . --codex
+npx ai-engineering-orchestrator@latest doctor --target .
 ```
 
-1. Clone or download this repository.
+Claude:
+
+```bash
+npx ai-engineering-orchestrator@latest install --target . --claude
+```
+
+Codex and Claude together:
+
+```bash
+npx ai-engineering-orchestrator@latest install --target . --codex --claude
+```
+
+Optional global install of the CLI:
+
+```bash
+npm install -g ai-engineering-orchestrator
+aeo install --target . --codex
+aeo doctor --target .
+aeo status --target .
+```
+
+User-scope Codex and Claude configuration is a separate, explicit step:
+
+```bash
+aeo install --global --codex --claude --dry-run
+aeo install --global --codex --claude
+aeo doctor --global
+```
+
+1. Confirm Node.js 20 or newer.
 2. Confirm the Antigravity CLI works: `agy -p "Reply with the single word ready." --mode accept-edits --output-format json --print-timeout 2m`
 3. Dry-run, then install into the target project.
 4. Read the change summary. Backups of shared files that AEO actually changes are under `~/.aeo/backups/<project-id>/<timestamp>/` (or `~/.aeo/backups/global/<timestamp>/`).
@@ -114,15 +141,27 @@ node scripts/aeo.mjs doctor --global
 6. Run doctor.
 7. Run [Test B](examples/smoke-test.md). Test B does not name Antigravity. A substantive fix should still be delegated.
 
-Pass `--codex`, `--claude`, or both. If you pass neither, the installer stops instead of guessing. `install.ps1` and `install.sh` call the same Node command. `update` is the same reconcile as `install`. It refreshes AEO material that still matches the last installed bytes. It does not overwrite agent files, the Claude orchestration rule, bridge source, or the interior of an AEO block after you edit them. `--force-managed-update` is the explicit opt-in for that replacement, and it backs up the drifted file first. That opt-in applies only to files and blocks the active install manifest already owns. Markers alone are not ownership. If `AGENTS.md` or `.codex/config.toml` already contains an AEO block and the manifest does not own it, the installer stops and leaves that block unchanged. Matching AEO content is not treated as proof of ownership. If an AEO-namespaced file already exists but is not recorded in the active install manifest, AEO preserves it and reports a collision. The file may come from a manual copy, an older setup, or an install that stopped before the manifest was saved, and matching bytes do not give AEO the right to delete it.
+Pass `--codex`, `--claude`, or both. If you pass neither, the installer stops instead of guessing. `update` is the same reconcile as `install`. It refreshes AEO material that still matches the last installed bytes. It does not overwrite agent files, the Claude orchestration rule, bridge source, or the interior of an AEO block after you edit them. `--force-managed-update` is the explicit opt-in for that replacement, and it backs up the drifted file first. That opt-in applies only to files and blocks the active install manifest already owns. Markers alone are not ownership. If `AGENTS.md` or `.codex/config.toml` already contains an AEO block and the manifest does not own it, the installer stops and leaves that block unchanged. Matching AEO content is not treated as proof of ownership. If an AEO-namespaced file already exists but is not recorded in the active install manifest, AEO preserves it and reports a collision. The file may come from a manual copy, an older setup, or an install that stopped before the manifest was saved, and matching bytes do not give AEO the right to delete it.
 
 Codex loads `<project>/.codex/config.toml` only when the project is trusted. AEO does not change trust. Trust the project in the normal Codex UX if the project config does not appear. Codex CLI and Codex IDE share configuration layers, which is why the installer does not edit `~/.codex/config.toml`, `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, or `~/.claude.json` unless `--global`.
 
 The manual merge, if you do not want the installer, is in [docs/install.md](docs/install.md).
 
+## Development / Install from source
+
+Clone the repository when you are changing AEO itself. `install.ps1` and `install.sh` call the same Node command as the published `aeo` binary.
+
+```bash
+node scripts/aeo.mjs install --target C:/path/to/project --codex --claude --dry-run
+node scripts/aeo.mjs install --target C:/path/to/project --codex --claude
+node scripts/aeo.mjs doctor --target C:/path/to/project
+```
+
 ## Antigravity bridge setup
 
 The server is [bridge/antigravity-mcp](bridge/antigravity-mcp/README.md).
+
+Normal use does not need this checkout. `aeo install` copies the Antigravity bridge into the target and installs its dependencies there. From a source checkout:
 
 ```bash
 cd bridge/antigravity-mcp
@@ -219,16 +258,19 @@ Example files contain no keys. Do not add any. Permission examples deny push, re
 ai-engineering-orchestrator/
 ├── README.md
 ├── LICENSE
+├── package.json               public npm package and the aeo binary
 ├── SECURITY.md
 ├── CONTRIBUTING.md
 ├── .gitignore
-├── .github/workflows/bridge.yml   credential-free bridge and installer tests
+├── .github/workflows/bridge.yml    credential-free bridge, installer, and npm package tests
+├── .github/workflows/publish.yml   tag-only npm publish via Trusted Publishing
 ├── bridge/antigravity-mcp/    MCP server, tests, and bridge README
+├── bridge/cursor-mcp/         Cursor MCP server, kept inside this package
 ├── presets/codex/             orchestration fragment, config fragment, namespaced agents
 ├── presets/claude/            orchestration rule, MCP fragment, namespaced agents
 ├── scripts/aeo.mjs            install, update, uninstall, status, and doctor
-├── install.ps1                Windows wrapper for scripts/aeo.mjs
-├── install.sh                 shell wrapper for scripts/aeo.mjs
+├── install.ps1                Windows wrapper for a source checkout
+├── install.sh                 shell wrapper for a source checkout
 ├── antigravity/settings.example.json
 ├── docs/
 ├── examples/
@@ -237,7 +279,7 @@ ai-engineering-orchestrator/
 
 The bridge also contains `lib/` and `test/`. Those are the implementation and the automated checks, not extra products.
 
-A local `node_modules` directory can exist in a working tree without belonging in a source archive. Pack tracked files with `git archive --format=zip --prefix=ai-engineering-orchestrator/ -o aeo-source.zip HEAD`. See [Source archive](docs/install.md#source-archive).
+A local `node_modules` directory can exist in a working tree without belonging in the npm package or a source archive. The published package is the file list in `package.json`. Pack a source snapshot with `git archive --format=zip --prefix=ai-engineering-orchestrator/ -o aeo-source.zip HEAD`. See [Source archive](docs/install.md#source-archive).
 
 ## Contributing
 
