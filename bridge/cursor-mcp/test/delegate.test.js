@@ -1,8 +1,20 @@
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
+
+const sharedWorktreeRoot = mkdtempSync(path.join(tmpdir(), "aeo-test-worktree-"));
+process.env.AEO_WORKTREE_ROOT = sharedWorktreeRoot;
+
+after(() => {
+    try {
+        rmSync(sharedWorktreeRoot, { recursive: true, force: true });
+    } catch {
+        // ignore
+    }
+});
 import assert from "node:assert/strict";
 
 import {

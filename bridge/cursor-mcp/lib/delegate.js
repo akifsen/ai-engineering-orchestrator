@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
-import { readdir, stat } from "node:fs/promises";
+import crypto from "node:crypto";
+import { access, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -12,6 +12,7 @@ import {
     normalizeRepoRoot,
     removeWorktree,
     resolveRepoRoot,
+    resolveWorktreeRoot,
     resolveWorktreeTtlMs,
     sweepStaleDelegations,
     touchDelegation
@@ -23,7 +24,9 @@ export const MIN_TIMEOUT_MINUTES = 1;
 export const MAX_TIMEOUT_MINUTES = 120;
 export const TERMINATE_GRACE_MS = 10_000;
 export const MAX_PROMPT_CHARS = 24_000;
-export const MAX_REPORT_CHARS = 120_000;
+export const MIN_REPORT_CHARS = 4_000;
+export const MAX_REPORT_CHARS_LIMIT = 200_000;
+export const MAX_REPORT_CHARS = 32_000;
 export const MAX_COLLECT_CHARS = 8_000_000;
 
 const MODEL_SLUG = /^[A-Za-z0-9._:[\]=,-]+$/;
@@ -135,6 +138,97 @@ function warnInvalidTimeout(warning) {
         firstUseWarned = true;
         console.error(warning);
     }
+}
+
+export function resolveMaxReportChars(env = process.env) {
+    const raw = env?.AEO_MAX_REPORT_CHARS;
+    if (raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "")) {
+        return {
+            limit: MAX_REPORT_CHARS,
+            warning: null
+        };
+    }
+
+    const trimmed = typeof raw === "string" ? raw.trim() : String(raw);
+    if (!/^-?\d+$/.test(trimmed)) {
+        return {
+            limit: MAX_REPORT_CHARS,
+            warning: `Invalid AEO_MAX_REPORT_CHARS "${raw}". Falling back to ${MAX_REPORT_CHARS} characters.`
+        };
+    }
+
+    const parsed = Number.parseInt(trimmed, 10);
+    const clamped = Math.max(MIN_REPORT_CHARS, Math.min(MAX_REPORT_CHARS_LIMIT, parsed));
+
+    return {
+        limit: clamped,
+        warning: null
+    };
+}
+
+const startupReportChars = resolveMaxReportChars(process.env);
+if (startupReportChars.warning) {
+    console.error(startupReportChars.warning);
+}
+
+let firstMaxReportWarned = false;
+
+function warnInvalidMaxReportChars(warning) {
+    if (warning && !firstMaxReportWarned) {
+        firstMaxReportWarned = true;
+        console.error(warning);
+    }
+}
+
+export function newReportRunId(randomBytesImpl = crypto.randomBytes) {
+    const iso = new Date().toISOString().replace(/[:.]/g, "-");
+    const suffix = randomBytesImpl(4).toString("hex");
+    return `${iso}-${suffix}`;
+}
+
+export async function persistEngineerReport({
+    response,
+    env = process.env,
+    mkdirImpl = mkdir,
+    writeFileImpl = writeFile,
+    randomBytesImpl = crypto.randomBytes,
+    resolveWorktreeRootImpl = resolveWorktreeRoot
+} = {}) {
+    try {
+        const reportRoot = resolveWorktreeRootImpl(env);
+        const runId = newReportRunId(randomBytesImpl);
+        const reportPath = path.join(reportRoot, "runs", runId, "report.md");
+
+        await mkdirImpl(path.dirname(reportPath), { recursive: true });
+        await writeFileImpl(reportPath, response, "utf8");
+        return { ok: true, path: path.resolve(reportPath) };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+        };
+    }
+}
+
+function buildFullReportToolLines(saveResult, truncated, maxReportChars) {
+    const lines = [];
+    if (saveResult.ok) {
+        lines.push(`Full report: ${saveResult.path}`);
+    } else {
+        lines.push(`Full report could not be saved: ${saveResult.error}`);
+    }
+    if (truncated) {
+        if (saveResult.ok) {
+            lines.push(
+                `Inline report truncated to ${maxReportChars} characters; read the file for the rest.`
+            );
+        } else {
+            lines.push(
+                `Inline report truncated to ${maxReportChars} characters; the full report could not be saved, so the rest is lost.`
+            );
+        }
+    }
+    return lines;
 }
 
 export function resolveDefaultModel(env = process.env) {
@@ -514,12 +608,12 @@ function outcome({
     };
 }
 
-function diagnosticBlock(title, body) {
+function diagnosticBlock(title, body, maxReportChars = MAX_REPORT_CHARS) {
     if (!body) {
         return "";
     }
 
-    return `\n\n---\n${title}:\n${truncate(body)}`;
+    return `\n\n---\n${title}:\n${truncate(body, maxReportChars)}`;
 }
 
 function formatMetadata(payload, model) {
@@ -607,10 +701,15 @@ export async function runCursor({
     hardTimeoutMs,
     terminateGraceMs = TERMINATE_GRACE_MS,
     maxCollectChars = MAX_COLLECT_CHARS,
+    maxReportChars = MAX_REPORT_CHARS,
     spawnImpl = spawn,
     terminateProcess = defaultTerminateProcess,
     env = process.env,
-    log = () => {}
+    log = () => {},
+    mkdirImpl = mkdir,
+    writeFileImpl = writeFile,
+    randomBytesImpl = crypto.randomBytes,
+    resolveWorktreeRootImpl = resolveWorktreeRoot
 }) {
     const wrappedPrompt = buildImplementationPrompt(prompt);
     const args = buildCursorSpawnArgs({ cwd, model, spawnTarget });
@@ -689,7 +788,7 @@ export async function runCursor({
                     `The bridge hard timeout (${Math.round(hardTimeoutMs / 60000)} minutes) elapsed.`,
                     "The process was terminated. Treat the implementation as not completed.",
                     unconfirmedLine,
-                    diagnosticBlock("CLI diagnostics", stderr).trim()
+                    diagnosticBlock("CLI diagnostics", stderr, maxReportChars).trim()
                 ].filter(Boolean).join("\n")
             });
             if (!confirmedExit) {
@@ -720,7 +819,7 @@ export async function runCursor({
                     "Cursor produced more output than the bridge will collect.",
                     "The process was terminated. Treat the implementation as not completed.",
                     unconfirmedLine,
-                    diagnosticBlock("Partial CLI diagnostics", stderr).trim()
+                    diagnosticBlock("Partial CLI diagnostics", stderr, maxReportChars).trim()
                 ].filter(Boolean));
                 if (!confirmedExit) {
                     overflowOutcome.exitUnconfirmed = true;
@@ -751,15 +850,16 @@ export async function runCursor({
                 missing
                     ? "Install the Cursor Agent CLI or set CURSOR_AGENT_BIN to the agent executable or index.js."
                     : errorText(error),
-                diagnosticBlock("CLI diagnostics", stderr).trim()
+                diagnosticBlock("CLI diagnostics", stderr, maxReportChars).trim()
             ].filter(Boolean)));
         });
 
-        child.on("close", (code) => {
+        child.on("close", async (code) => {
             if (overflow || timedOut) {
                 return;
             }
 
+            try {
             const parsed = parseCursorEnvelope(stdout);
             const diagnostics = stderr.trim();
             const resultText = parsed.ok && typeof parsed.value.result === "string"
@@ -779,9 +879,9 @@ export async function runCursor({
                     !parsed.ok
                         ? `Output parse: ${parsed.error}`
                         : "",
-                    diagnosticBlock("CLI diagnostics", diagnostics).trim(),
+                    diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
                     !parsed.ok && stdout.trim()
-                        ? diagnosticBlock("Raw stdout", stdout).trim()
+                        ? diagnosticBlock("Raw stdout", stdout, maxReportChars).trim()
                         : ""
                 ].filter(Boolean);
 
@@ -801,8 +901,8 @@ export async function runCursor({
                 const lines = [
                     "Cursor Agent exited 0 but did not return a JSON result object.",
                     parsed.error,
-                    diagnosticBlock("CLI diagnostics", diagnostics).trim(),
-                    diagnosticBlock("Raw stdout", stdout).trim()
+                    diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
+                    diagnosticBlock("Raw stdout", stdout, maxReportChars).trim()
                 ].filter(Boolean);
 
                 if (indicatesQuotaOrAuthFailure(diagnostics, stdout)) {
@@ -818,6 +918,21 @@ export async function runCursor({
             const failed = payload.is_error === true || payload.subtype !== "success";
 
             if (failed) {
+                const failureResponse = typeof resultText === "string" ? resultText.trim() : "";
+                let fullReportLines = [];
+                if (failureResponse) {
+                    const truncated = failureResponse.length > maxReportChars;
+                    const saveResult = await persistEngineerReport({
+                        response: failureResponse,
+                        env,
+                        mkdirImpl,
+                        writeFileImpl,
+                        randomBytesImpl,
+                        resolveWorktreeRootImpl
+                    });
+                    fullReportLines = buildFullReportToolLines(saveResult, truncated, maxReportChars);
+                }
+
                 const lines = [
                     "The Cursor Agent CLI exited 0 and returned structured output, so the process started.",
                     "The agent run itself did not succeed. This is not a successful implementation.",
@@ -826,7 +941,8 @@ export async function runCursor({
                     resultText
                         ? `Result: ${truncate(resultText, 4_000)}`
                         : "",
-                    diagnosticBlock("CLI diagnostics", diagnostics).trim(),
+                    ...fullReportLines,
+                    diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
                     "",
                     "Execution metadata:",
                     formatMetadata(payload, model)
@@ -853,7 +969,7 @@ export async function runCursor({
                         "Outcome: agent_failure",
                         "Cursor reported success but returned an empty result.",
                         "Treat the implementation as not completed.",
-                        diagnosticBlock("CLI diagnostics", diagnostics).trim(),
+                        diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
                         "",
                         "Execution metadata:",
                         formatMetadata(payload, model)
@@ -862,23 +978,41 @@ export async function runCursor({
                 return;
             }
 
+            const response = typeof resultText === "string" ? resultText.trim() : "";
+            const truncated = response.length > maxReportChars;
+            const saveResult = await persistEngineerReport({
+                response,
+                env,
+                mkdirImpl,
+                writeFileImpl,
+                randomBytesImpl,
+                resolveWorktreeRootImpl
+            });
+            const fullReportLines = buildFullReportToolLines(saveResult, truncated, maxReportChars);
+
             finish(outcome({
                 outcomeName: "agent_success",
                 isError: false,
                 text: [
                     "Outcome: agent_success",
                     "The implementation engineer finished a run. This report is evidence for the Team Lead. It is not approval.",
+                    ...fullReportLines,
                     "",
-                    truncate(resultText),
+                    truncate(response, maxReportChars),
                     "",
                     "---",
                     "Execution metadata:",
                     formatMetadata(payload, model),
                     diagnostics
-                        ? diagnosticBlock("CLI diagnostics", diagnostics).trim()
+                        ? diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim()
                         : ""
                 ].filter(Boolean).join("\n")
             }));
+            } catch (error) {
+                finish(cliFailure([
+                    `Cursor bridge internal error: ${errorText(error)}`
+                ]));
+            }
         });
     });
 }
@@ -892,8 +1026,11 @@ export async function delegateToCursor(input, dependencies = {}) {
         const timeoutOverride = normalizeTimeoutMinutes(input?.timeoutMinutes);
         const timeouts = resolveTimeouts(env, timeoutOverride);
         warnInvalidTimeout(timeouts.warning);
+        const reportChars = resolveMaxReportChars(dependencies.env ?? process.env);
+        warnInvalidMaxReportChars(reportChars.warning);
         const hardTimeoutMs = dependencies.hardTimeoutMs ?? timeouts.hardTimeoutMs;
         const terminateGraceMs = dependencies.terminateGraceMs ?? TERMINATE_GRACE_MS;
+        const maxReportChars = dependencies.maxReportChars ?? reportChars.limit;
         const isolation = normalizeIsolation(input?.isolation);
         const delegationId = normalizeDelegationId(input?.delegationId, isolation);
 
@@ -917,13 +1054,14 @@ export async function delegateToCursor(input, dependencies = {}) {
 
         if (isolation === "none") {
             return await runCursor({
+                hardTimeoutMs,
+                terminateGraceMs,
                 ...dependencies,
                 prompt,
                 cwd,
                 model,
                 spawnTarget,
-                hardTimeoutMs,
-                terminateGraceMs,
+                maxReportChars,
                 env
             });
         }
@@ -1051,13 +1189,14 @@ export async function delegateToCursor(input, dependencies = {}) {
 
         try {
             const cursorResult = await runCursor({
+                hardTimeoutMs,
+                terminateGraceMs,
                 ...dependencies,
                 prompt,
                 cwd: delegationContext.worktreePath,
                 model,
                 spawnTarget,
-                hardTimeoutMs,
-                terminateGraceMs,
+                maxReportChars,
                 env
             });
 

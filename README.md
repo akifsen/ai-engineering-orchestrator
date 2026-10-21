@@ -296,3 +296,4 @@ Policy changes have to keep the Team Lead and the Implementation Engineer apart,
 - [Quality gate](docs/quality-gate.md)
 - [Revision loop](docs/revision-loop.md)
 - [Permissions](docs/permissions.md)
+- [Context hygiene](docs/context-hygiene.md)
