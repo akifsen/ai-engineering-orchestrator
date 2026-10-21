@@ -7,7 +7,9 @@ A strong coding model is costly in tokens, latency, and attention. Using it to t
 - expensive reasoning for the objective, the design, the contract, the review, and the approval;
 - a cost-efficient implementation model for the edit, the tests, and the revision.
 
-That is the meaning of cost-aware AI engineering orchestration here. It is not a claim that several models are wiser than one, and it is not a measured savings guarantee. This repository does not benchmark vendors or bill tokens.
+That is the meaning of cost-aware AI engineering orchestration here. It is not a claim that several models are wiser than one, and it is not a measured savings guarantee. This repository does not measure or guarantee a savings number. This repository does not benchmark vendors or bill tokens.
+
+Independent review and a maker/checker split are useful consequences. They are not the primary reason for the split.
 
 ## Cheaper is user-relative
 
@@ -51,6 +53,8 @@ That covers:
 - tests that lock behavior;
 - revisions after review.
 
+CHANGES REQUIRED returns to Antigravity.
+
 The policy file names the tools. This repository ships bridges for `delegate_antigravity` and `delegate_cursor`.
 
 Discovery can stay on a lower-effort path. Explorer is a read-only lookup. Architect is reserved for a design decision that would be expensive to get wrong. Reviewer is reserved for a challenge that might change the decision. fast-worker is only a trivial mechanical edit. If fast-worker starts making product decisions, that path has been stretched into the wrong job. Stop and delegate to the Implementation Engineer.
@@ -64,6 +68,31 @@ The failure mode this repository is built to resist is the opposite one: the exp
 ## What routing is not
 
 Routing is not an escalation ladder from a lower-effort agent up to an expensive one. Explorer does not get promoted into architect, and fast-worker does not get promoted into the Implementation Engineer. Each one is chosen for a job. See [architecture](architecture.md) for the role map and [policy versus capability](policy-vs-capability.md) for why the policy file, not the MCP tool, enforces the split.
+
+## How to measure your own savings
+
+Use `scripts/measure-delegation.mjs` to print a markdown table row in the format used by the README measured-example table.
+
+Collect these yourself:
+
+- Team Lead tokens from your provider's usage view. The bridge does not capture Team Lead tokens.
+- Engineer tokens from an `agy` JSON envelope or from the bridge metadata JSON block. Both carry a `usage` object. The `agy` usage schema is not documented in this repository.
+- Your own per-token rates (USD per 1M tokens) for the Team Lead and the engineer.
+- Your own estimate of Team Lead tokens had that model typed the change without delegation (`--without-delegation-tokens`).
+
+The script prices nothing unless you pass rates. Results are account-specific. This repository does not measure or guarantee a savings number.
+
+Example:
+
+```bash
+node scripts/measure-delegation.mjs --task "<task-name>" --team-lead-tokens <N> --agy-json <agy-json-path> --team-lead-rate <N> --engineer-rate <N> --without-delegation-tokens <N> --header
+```
+
+## Unmeasured costs
+
+The measurement script exists to help answer two open questions, not to close them.
+
+A review and revision loop can consume more Team Lead tokens than direct implementation would have. Delegation round-trips add latency: the bridge waits up to the configured timeout per call. Whether the split still saves money on a given task depends on those costs as well as the token rates you pass in.
 
 ## Personal example
 
