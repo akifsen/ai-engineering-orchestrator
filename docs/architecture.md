@@ -34,10 +34,10 @@ The bridge does not choose the route. A model does not become the authority beca
 3. Explorer returns files and symbols when the Team Lead does not already know where the change lives.
 4. Architect returns constraints when the design is consequential. The Team Lead still owns the decision.
 5. The Team Lead writes an [implementation contract](implementation-contract.md) and calls `delegate_antigravity` (or `delegate_cursor` when Antigravity cannot run) with the absolute repository path. For parallel work, delegations specify `isolation: "worktree"` with non-overlapping file scopes; default sequential work edits `cwd` in place.
-6. Antigravity edits inside that directory (or an isolated worktree) and returns a completion report. The bridge labels the run `agent_success`, `agent_failure`, `cli_failure`, `timeout`, or `validation_failure`.
+6. Antigravity edits inside that directory (or an isolated worktree) and returns a completion report. The bridge labels the run `agent_success`, `agent_failure`, `quota_or_auth_failure`, `cli_failure`, `timeout`, or `validation_failure`. On quota exhaustion it retries the same contract with the models in `AEO_AGY_FALLBACK_MODELS` before returning `quota_or_auth_failure`; auth failures do not trigger that fallback.
 7. For an isolated delegation, the Team Lead applies the patch to the main tree using `apply_delegation` (one at a time), which checks and applies unstaged changes (or reports `apply_conflict`, `no_changes`, or `apply_error`). The Team Lead compares the working tree with the baseline, reads the diff, and runs or checks the relevant tests.
 8. Reviewer may challenge the diff. The Team Lead checks material findings, including any claim about who edited a file.
-9. The Team Lead chooses APPROVED or CHANGES REQUIRED. A required revision goes back to Antigravity (reusing `delegationId` for worktree isolation). Once approved or abandoned, the worktree is cleaned up with `discard_delegation`.
+9. The Team Lead chooses APPROVED or CHANGES REQUIRED. A required revision goes back to Antigravity (reusing `delegationId` for worktree isolation). After a successful `apply_delegation` (`applied` or `no_changes`), the bridge removes the worktree unless `keepWorktree: true`; use `discard_delegation` for kept, conflicted, or abandoned delegations. Each new isolated delegation sweeps unapplied delegations older than `AEO_WORKTREE_TTL_HOURS` (default 24 hours).
 
 ```mermaid
 flowchart TD
@@ -58,7 +58,7 @@ flowchart TD
 
 ## Parallel delegation
 
-Worktree isolation enables concurrent delegations without git conflicts in the main tree. Each parallel delegation requires `isolation: "worktree"` and an explicit, non-overlapping file scope. Parallel delegations can be split between Antigravity and Cursor; apply and discard each one on the MCP server that created it. The bridge manages worktree creation and removal from committed HEAD. Because isolated worktrees do not include uncommitted changes or untracked dependencies like `node_modules`, engineer-side tests in the worktree may be partial or blocked. Nothing lands in the main tree until `apply_delegation`. The Team Lead reviews the diff, applies delegations one at a time, verifies git status and tests in the main tree after each apply, and removes finished worktrees with `discard_delegation`.
+Worktree isolation enables concurrent delegations without git conflicts in the main tree. Each parallel delegation requires `isolation: "worktree"` and an explicit, non-overlapping file scope. Parallel delegations can be split between Antigravity and Cursor; apply and discard each one on the MCP server that created it. The bridge manages worktree creation and removal from committed HEAD. Because isolated worktrees do not include uncommitted changes or untracked dependencies like `node_modules`, engineer-side tests in the worktree may be partial or blocked. Nothing lands in the main tree until `apply_delegation`. The Team Lead reviews the diff, applies delegations one at a time, and verifies git status and tests in the main tree after each apply. Successful apply removes the worktree unless `keepWorktree` was set; `discard_delegation` remains for kept, conflicted, or abandoned delegations, and stale unapplied delegations are swept after `AEO_WORKTREE_TTL_HOURS`.
 
 ## What is not in this repository
 

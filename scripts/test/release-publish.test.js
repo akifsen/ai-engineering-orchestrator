@@ -109,16 +109,16 @@ test("a tag that does not match the canonical versions fails", () => {
     assert.equal(unstable.ok, false);
 });
 
-test("the current repository versions match tag v1.2.0", () => {
+test("the current repository versions match tag v1.3.0", () => {
     const root = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
     const versions = { "package.json": root.version };
     for (const directory of ["bridge/antigravity-mcp", "bridge/cursor-mcp"]) {
         const pkg = JSON.parse(readFileSync(path.join(repoRoot, directory, "package.json"), "utf8"));
         versions[directory] = pkg.version;
     }
-    const result = assertTagMatchesCanonicalVersions("v1.2.0", versions);
+    const result = assertTagMatchesCanonicalVersions("v1.3.0", versions);
     assert.equal(result.ok, true);
-    assert.equal(result.version, "1.2.0");
+    assert.equal(result.version, "1.3.0");
 });
 
 test("publication uses the packed tarball and does not request provenance", () => {

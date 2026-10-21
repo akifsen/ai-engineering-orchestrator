@@ -235,6 +235,18 @@ A permission string that was already present before AEO is left alone and is not
 
 A drifted file that the manifest already owns does not stop the install. AEO preserves it. See [Update safety](#update-safety).
 
+## Environment variables
+
+Bridge MCP servers read these from the environment of the process that starts them (not from the installer). See [bridge/antigravity-mcp/README.md](../bridge/antigravity-mcp/README.md) and [bridge/cursor-mcp/README.md](../bridge/cursor-mcp/README.md) for details.
+
+| Variable | Meaning |
+| --- | --- |
+| `AGY_BIN` | Path to the Antigravity CLI when `agy` is not on `PATH`. |
+| `AEO_AGY_TIMEOUT_MINUTES` | Antigravity delegation timeout in minutes (default 15; clamped 1..18). |
+| `AEO_AGY_FALLBACK_MODELS` | Comma-separated Gemini slugs to try on quota exhaustion (default `gemini-3.8-flash-high`; `none` disables). |
+| `AEO_WORKTREE_ROOT` | Directory for bridge-owned worktrees (default under the OS temp directory). |
+| `AEO_WORKTREE_TTL_HOURS` | Hours before unapplied delegations are swept on a new isolated delegation (default 24; `0` disables). |
+
 ## Source archive
 
 A working tree may contain `node_modules`. That directory is local. It stays out of a source archive when Git is not tracking it.
