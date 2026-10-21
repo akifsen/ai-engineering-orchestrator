@@ -37,12 +37,14 @@ Stdout of this MCP process is protocol only. Diagnostics, including `cursor-mcp:
 
 ## Worktree isolation
 
-Parallel delegations must use `isolation: "worktree"` with non-overlapping file scopes so delegations do not touch the main working tree or each other. Cursor runs with spawn `cwd` and `--workspace` set to the bridge-owned worktree path (same layout and default root as the Antigravity bridge under `%TEMP%\\aeo-antigravity` or `AEO_WORKTREE_ROOT`).
+Parallel delegations must use `isolation: "worktree"` with non-overlapping file scopes so delegations do not touch the main working tree or each other. Cursor runs with spawn `cwd` and `--workspace` set to the bridge-owned worktree path (same layout as the Antigravity bridge; `worktree.js` is kept in sync).
 
-- **`apply_delegation`**: takes `cwd` and `delegationId`. Applies the patch to the main working tree as unstaged changes after `git apply --check`. Call it on **`aeo-cursor`** for delegations created with `delegate_cursor` on that server.
-- **`discard_delegation`**: removes the bridge-owned worktree and patch. Never touches the main working tree.
-- **Busy guard**: concurrent revisions, applies, or discards for the same delegation ID return `validation_failure` while a delegation run is in progress.
-- **Manual recovery**: `git worktree list` and `git worktree prune` for abandoned entries.
+- **`apply_delegation`**: takes `cwd`, `delegationId`, and optional `keepWorktree`. Applies the patch of a worktree-isolated delegation to the main working tree as unstaged changes after a `git apply --check`. Applying the same delegation twice returns `apply_conflict`. On a successful `applied` or `no_changes` result, the bridge removes the delegation worktree automatically unless `keepWorktree: true`. Call it on **`aeo-cursor`** for delegations created with `delegate_cursor` on that server. The Team Lead must review the diff and re-run tests in the main tree after each apply. Apply one delegation at a time.
+- **`discard_delegation`**: takes `cwd` and `delegationId`. Explicitly removes the bridge-owned worktree and patch for a delegation (for example after `keepWorktree`, on `apply_conflict`, or to abandon a run). It never touches the main working tree.
+- **Storage**: Worktrees live under `AEO_WORKTREE_ROOT` or `<os tmpdir>/aeo-antigravity` (shared module with the Antigravity bridge).
+- **Automatic cleanup**: Isolated runs that produce no file changes remove the worktree when the run finishes (except on `timeout` or when the child process exit is unconfirmed after termination, where files may still be changing). When a new isolated delegation is created, after its worktree exists and before the engineer starts, the bridge sweeps unapplied delegations older than `AEO_WORKTREE_TTL_HOURS` (default 24 hours; `0` disables the sweep). The sweep deletes stale patches and worktrees (data loss if you still needed them — apply or discard promptly, raise `AEO_WORKTREE_TTL_HOURS`, or set `0`).
+- **Busy guard**: A delegation is marked busy while its engineer is running and during `apply_delegation` / `discard_delegation`; concurrent revisions, applies, or discards for the same delegation ID return `validation_failure` until the operation completes. Busy tracking is per bridge process — another process sharing `AEO_WORKTREE_ROOT` could still sweep a delegation past the TTL; use a longer TTL or `0` when delegations are reviewed for days.
+- **Manual recovery**: Manual recovery for abandoned worktrees is `git worktree list` and `git worktree prune`, or set `AEO_WORKTREE_TTL_HOURS` and let the bridge sweep on the next delegation.
 
 ## Results
 
@@ -103,6 +105,19 @@ Run a one-line delegation in a temp git repo and confirm the outcome (see projec
 | `CURSOR_AGENT_BIN` | Override executable or `index.js` path. |
 | `AEO_CURSOR_MODEL` | Default model slug (default `composer-2.5`). |
 | `AEO_CURSOR_TIMEOUT_MINUTES` | Default timeout minutes, 1..120 (default 30). |
+| `AEO_WORKTREE_TTL_HOURS` | Stale worktree sweep TTL in hours (default 24; `0` disables). Invalid or negative values fall back to 24 with a one-time stderr warning. |
+
+Set `AEO_WORKTREE_TTL_HOURS` to control automatic removal of stale bridge worktrees:
+
+```bash
+# Windows
+set AEO_WORKTREE_TTL_HOURS=24
+
+# macOS or Linux
+export AEO_WORKTREE_TTL_HOURS=24
+```
+
+`AEO_WORKTREE_TTL_HOURS` must be a non-negative integer hour count. The sweep runs best-effort when a new isolated delegation is created (after its worktree exists, before the engineer starts; not on revisions) and deletes unapplied patches and worktrees older than the TTL that are not busy in this process.
 
 When unset, the bridge sets `NODE_COMPILE_CACHE` under `%LOCALAPPDATA%\cursor-compile-cache` on Windows and `CURSOR_INVOKED_AS=cursor-agent`, matching the shipped PowerShell launcher behavior.
 

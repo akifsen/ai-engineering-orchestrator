@@ -219,7 +219,8 @@ test("worktree happy path: spawn cwd and --workspace === worktreePath; buildPatc
                 patchPath: fakePatchPath,
                 diffstat: "src/index.js | 2 +-\n 1 file changed"
             };
-        }
+        },
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
     };
 
     try {
@@ -268,7 +269,9 @@ test("worktree: hasChanges false -> No changes. and clean status", async () => {
             hasChanges: false,
             patchPath: fakePatchPath,
             diffstat: ""
-        })
+        }),
+        removeWorktree: async () => ({ ok: true }),
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
     };
 
     try {
@@ -279,6 +282,21 @@ test("worktree: hasChanges false -> No changes. and clean status", async () => {
         assert.equal(result.delegation.hasChanges, false);
         assert.ok(result.text.includes("Changes:\nNo changes."));
         assert.ok(result.text.includes("Main tree status at worktree creation:\nclean"));
+        assert.ok(result.text.includes(`Worktree: ${fakeWorktreePath} (removed)`));
+        assert.ok(result.text.includes(`Patch: ${fakePatchPath} (removed)`));
+        assert.equal(
+            result.text.includes("Nothing lands in the main tree until apply_delegation."),
+            false
+        );
+        assert.ok(
+            result.text.includes(
+                "Revision with this delegation ID is no longer possible; delegate again for follow-up work."
+            )
+        );
+        assert.ok(
+            result.text.includes("Worktree removed automatically: the run produced no changes.")
+        );
+        assert.equal(result.delegation.worktreeRemoved, true);
     } finally {
         await rm(directory, { recursive: true, force: true });
     }
@@ -363,7 +381,7 @@ test("delegationId revision: loadDelegation used, createWorktree NOT called; unk
     }
 });
 
-test("failure outcomes under isolation: buildPatch still called, removeWorktree never called", async () => {
+test("failure outcomes under isolation: buildPatch still called; auto-remove on no changes except timeout", async () => {
     const directory = await tempDirectory();
     const fakeWorktreePath = path.join(directory, "mock-worktree");
     const fakePatchPath = path.join(directory, "mock.patch");
@@ -415,9 +433,11 @@ test("failure outcomes under isolation: buildPatch still called, removeWorktree 
                     buildPatchCalled = true;
                     return { ok: true, hasChanges: false, patchPath: fakePatchPath, diffstat: "" };
                 },
-                removeWorktree: () => {
+                removeWorktree: async () => {
                     removeWorktreeCalled = true;
-                }
+                    return { ok: true };
+                },
+                sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
             };
 
             const result = await delegateToCursor(
@@ -426,7 +446,15 @@ test("failure outcomes under isolation: buildPatch still called, removeWorktree 
             );
 
             assert.equal(buildPatchCalled, true, `${name}: buildPatch must run`);
-            assert.equal(removeWorktreeCalled, false, `${name}: removeWorktree must not run`);
+            if (name === "timeout") {
+                assert.equal(removeWorktreeCalled, false, `${name}: removeWorktree must not run on timeout`);
+            } else {
+                assert.equal(removeWorktreeCalled, true, `${name}: removeWorktree must run when there are no changes`);
+                assert.equal(result.delegation.worktreeRemoved, true);
+                assert.ok(
+                    result.text.includes("Worktree removed automatically: the run produced no changes.")
+                );
+            }
             assert.equal(result.outcome, name);
             assert.ok(result.text.includes("Isolation: worktree"));
         }
@@ -457,7 +485,8 @@ test("two concurrent worktree delegations -> distinct worktrees (spawn order ind
             hasChanges: true,
             patchPath,
             diffstat: "file | 1 +"
-        })
+        }),
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
     };
 
     const calls = [];
@@ -516,24 +545,27 @@ test("applyDelegation and discardDelegation outcomes", async () => {
                 worktreePath: path.join(directory, "wt"),
                 patchPath: path.join(directory, "patch")
             }),
-            applyPatch: async () => ({ ok: true, applied: true })
+            applyPatch: async () => ({ ok: true, applied: true }),
+            removeWorktree: async () => ({ ok: true })
         };
         const appRes = await applyDelegation(
             { cwd: directory, delegationId: "aabbccddee" },
             { worktree: mockApplied }
         );
         assert.equal(appRes.outcome, "applied");
-        assert.ok(appRes.text.includes("worktree still exists until discard_delegation"));
+        assert.ok(appRes.text.includes("Worktree removed."));
 
         const mockNoChanges = {
             loadDelegation: mockApplied.loadDelegation,
-            applyPatch: async () => ({ ok: true, applied: false, reason: "no changes" })
+            applyPatch: async () => ({ ok: true, applied: false, reason: "no changes" }),
+            removeWorktree: async () => ({ ok: true })
         };
         const ncRes = await applyDelegation(
             { cwd: directory, delegationId: "aabbccddee" },
             { worktree: mockNoChanges }
         );
         assert.equal(ncRes.outcome, "no_changes");
+        assert.ok(ncRes.text.includes("Worktree removed."));
 
         const mockConflict = {
             loadDelegation: mockApplied.loadDelegation,
@@ -606,7 +638,9 @@ test("busy guard: revision while delegation running returns validation_failure",
             worktreePath: path.join(directory, "wt"),
             patchPath: path.join(directory, "patch")
         }),
-        buildPatch: async () => ({ ok: true, hasChanges: false, diffstat: "" })
+        buildPatch: async () => ({ ok: true, hasChanges: false, diffstat: "" }),
+        removeWorktree: async () => ({ ok: true }),
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
     };
 
     try {
@@ -630,6 +664,129 @@ test("busy guard: revision while delegation running returns validation_failure",
         assert.equal(busyDelegations.has(makeBusyKey(directory, delegationId)), false);
     } finally {
         releaseRun?.();
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("applyDelegation: applied with keepWorktree true does not call removeWorktree", async () => {
+    const directory = await tempDirectory();
+    let removeCalled = false;
+    const loadOk = async () => ({
+        ok: true,
+        delegationId: "abcdef1234",
+        repoRoot: directory,
+        baseCommit: "sha",
+        patchPath: path.join(directory, "p"),
+        worktreePath: path.join(directory, "wt")
+    });
+
+    try {
+        const result = await applyDelegation(
+            { cwd: directory, delegationId: "abcdef1234", keepWorktree: true },
+            {
+                worktree: {
+                    loadDelegation: loadOk,
+                    applyPatch: async () => ({ ok: true, applied: true }),
+                    removeWorktree: async () => {
+                        removeCalled = true;
+                        return { ok: true };
+                    }
+                }
+            }
+        );
+        assert.equal(result.outcome, "applied");
+        assert.equal(removeCalled, false);
+        assert.equal(result.text.includes("Worktree removed."), false);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("delegateToCursor: sweep after createWorktree before cursor spawn on new delegation, not on revision", async () => {
+    const directory = await tempDirectory();
+    const fakeWorktreePath = path.join(directory, "wt");
+    const fakePatchPath = path.join(directory, "patch");
+    const delegationId = "9988776655";
+    const { spawnImpl, calls } = mockSpawn({ code: 0, stdout: successEnvelope("Done.") });
+
+    let sweepCalls = 0;
+    let createCalls = 0;
+    let sweepAfterCreate = false;
+    let sweepBeforeCursor = false;
+
+    const mockWorktree = {
+        sweepStaleDelegations: async () => {
+            sweepCalls++;
+            sweepAfterCreate = createCalls === 1;
+            sweepBeforeCursor = calls.length === 0;
+            return { ok: true, removed: ["1111111111", "2222222222"], failed: [] };
+        },
+        createWorktree: async ({ cwd }) => {
+            createCalls++;
+            return {
+                ok: true,
+                delegationId,
+                repoRoot: cwd,
+                baseCommit: "base",
+                worktreePath: fakeWorktreePath,
+                patchPath: fakePatchPath,
+                mainTreeStatus: "clean"
+            };
+        },
+        buildPatch: async () => ({
+            ok: true,
+            hasChanges: true,
+            diffstat: "f | 1 +"
+        }),
+        removeWorktree: async () => ({ ok: true })
+    };
+
+    try {
+        const newRes = await delegateToCursor(
+            { prompt: "Task", cwd: directory, isolation: "worktree" },
+            { spawnImpl, spawnTarget, worktree: mockWorktree }
+        );
+        assert.equal(sweepCalls, 1);
+        assert.equal(createCalls, 1);
+        assert.equal(sweepAfterCreate, true);
+        assert.equal(sweepBeforeCursor, true);
+        assert.ok(newRes.text.includes("Stale delegations removed: 1111111111, 2222222222"));
+
+        sweepCalls = 0;
+        createCalls = 0;
+        const revisionWorktree = {
+            ...mockWorktree,
+            loadDelegation: async () => ({
+                ok: true,
+                delegationId,
+                repoRoot: directory,
+                baseCommit: "base",
+                worktreePath: fakeWorktreePath,
+                patchPath: fakePatchPath
+            }),
+            createWorktree: async () => {
+                createCalls++;
+                throw new Error("createWorktree must not run on revision");
+            },
+            sweepStaleDelegations: async () => {
+                sweepCalls++;
+                return { ok: true, removed: [], failed: [] };
+            }
+        };
+
+        const revRes = await delegateToCursor(
+            {
+                prompt: "Revise",
+                cwd: directory,
+                isolation: "worktree",
+                delegationId
+            },
+            { spawnImpl, spawnTarget, worktree: revisionWorktree }
+        );
+        assert.equal(revRes.outcome, "agent_success");
+        assert.equal(sweepCalls, 0);
+        assert.equal(createCalls, 0);
+    } finally {
         await rm(directory, { recursive: true, force: true });
     }
 });

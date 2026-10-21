@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -21,6 +21,9 @@ import {
     repoLocks,
     resolveRepoRoot,
     resolveWorktreeRoot,
+    resolveWorktreeTtlMs,
+    sweepStaleDelegations,
+    touchDelegation,
     runGit,
     withRepoLock
 } from "../lib/worktree.js";
@@ -389,6 +392,7 @@ test("createWorktree executes exact git arg sequence with cwd=repoRoot and write
         assert.equal(meta.worktreePath, result.worktreePath);
         assert.equal(meta.patchPath, result.patchPath);
         assert.ok(meta.createdAt);
+        assert.equal(meta.lastActivityAt, meta.createdAt);
     } finally {
         await rm(tmpWorktreeRoot, { recursive: true, force: true });
     }
@@ -734,7 +738,7 @@ test("removeWorktree: happy path", async () => {
         });
 
         assert.equal(result.ok, true);
-        assert.equal(calls.length, 1);
+        assert.equal(calls.length, 2);
         assert.deepEqual(calls[0].args.slice(2), [
             "worktree",
             "remove",
@@ -743,9 +747,37 @@ test("removeWorktree: happy path", async () => {
             paths.worktreePath
         ]);
         assert.equal(calls[0].options.cwd, repoRoot);
+        assert.deepEqual(calls[1].args.slice(2), ["worktree", "prune"]);
 
         // Verify directory was removed
         await assert.rejects(stat(paths.dir), { code: "ENOENT" });
+    } finally {
+        await rm(tmpWorktreeRoot, { recursive: true, force: true });
+    }
+});
+
+test("removeWorktree: removes empty repoKey parent directory", async () => {
+    const tmpWorktreeRoot = await mkdtemp(path.join(os.tmpdir(), "aeo-wt-rm-parent-"));
+    const repoRoot = path.resolve("/mock/repo/rm-parent");
+    const delegationId = "2233445566";
+    const key = repoKey(repoRoot);
+    const paths = delegationPaths(tmpWorktreeRoot, repoRoot, delegationId);
+    await mkdir(paths.worktreePath, { recursive: true });
+    await writeFile(paths.metaPath, "{}");
+
+    const { spawnImpl } = mockGitSpawn({ code: 0 });
+
+    try {
+        const result = await removeWorktree({
+            repoRoot,
+            delegationId,
+            env: { AEO_WORKTREE_ROOT: tmpWorktreeRoot },
+            spawnImpl
+        });
+
+        assert.equal(result.ok, true);
+        const parentDir = path.join(tmpWorktreeRoot, key);
+        await assert.rejects(stat(parentDir), { code: "ENOENT" });
     } finally {
         await rm(tmpWorktreeRoot, { recursive: true, force: true });
     }
@@ -761,9 +793,16 @@ test("removeWorktree: remove failure falls back to prune and still removes direc
     await writeFile(paths.metaPath, "{}");
 
     const order = [];
+    const rmPaths = [];
     const customRm = async (p, opts) => {
         order.push("rm");
+        rmPaths.push(p);
         return await rm(p, opts);
+    };
+    const customRmdir = async (p) => {
+        order.push("rmdir");
+        rmPaths.push(p);
+        return await rm(p, { recursive: true, force: true });
     };
 
     const { spawnImpl, calls } = mockGitSpawn((args) => {
@@ -785,7 +824,8 @@ test("removeWorktree: remove failure falls back to prune and still removes direc
             delegationId,
             env: { AEO_WORKTREE_ROOT: tmpWorktreeRoot },
             spawnImpl,
-            rmImpl: customRm
+            rmImpl: customRm,
+            rmdirImpl: customRmdir
         });
 
         assert.equal(result.ok, true);
@@ -799,8 +839,13 @@ test("removeWorktree: remove failure falls back to prune and still removes direc
         ]);
         assert.deepEqual(calls[1].args.slice(2), ["worktree", "prune"]);
 
-        // Verify order: rm delegation dir before worktree prune
-        assert.deepEqual(order, ["remove", "rm", "prune"]);
+        const key = repoKey(repoRoot);
+        const repoKeyDir = path.join(tmpWorktreeRoot, key);
+
+        // Verify order: rm delegation dir, non-recursive repoKey rmdir, then worktree prune
+        assert.deepEqual(order, ["remove", "rm", "rmdir", "prune"]);
+        assert.equal(rmPaths[0], paths.dir);
+        assert.equal(rmPaths[1], repoKeyDir);
 
         // Directory was still removed
         await assert.rejects(stat(paths.dir), { code: "ENOENT" });
@@ -1392,5 +1437,212 @@ test("applyPatch: missing repoRoot or patchPath returns outcome: apply_error", a
     assert.equal(resNoPatch.ok, false);
     assert.equal(resNoPatch.outcome, "apply_error");
     assert.match(resNoPatch.error, /patchPath is required/);
+});
+
+test("touchDelegation updates lastActivityAt in meta.json", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "aeo-touch-"));
+    const metaPath = path.join(tmpDir, "meta.json");
+    await writeFile(
+        metaPath,
+        JSON.stringify({ createdAt: "2026-01-01T00:00:00.000Z" }, null, 4),
+        "utf8"
+    );
+
+    try {
+        const touchRes = await touchDelegation({
+            metaPath,
+            now: Date.parse("2026-02-01T12:00:00.000Z")
+        });
+        assert.equal(touchRes.ok, true);
+        const meta = JSON.parse(await readFile(metaPath, "utf8"));
+        assert.equal(meta.lastActivityAt, "2026-02-01T12:00:00.000Z");
+    } finally {
+        await rm(tmpDir, { recursive: true, force: true });
+    }
+});
+
+test("resolveWorktreeTtlMs: default, valid hours, zero disables, invalid falls back", () => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    assert.equal(resolveWorktreeTtlMs({}), dayMs);
+    assert.equal(resolveWorktreeTtlMs({ AEO_WORKTREE_TTL_HOURS: "48" }), 48 * 60 * 60 * 1000);
+    assert.equal(resolveWorktreeTtlMs({ AEO_WORKTREE_TTL_HOURS: "0" }), 0);
+    assert.equal(resolveWorktreeTtlMs({ AEO_WORKTREE_TTL_HOURS: "nope" }), dayMs);
+    assert.equal(resolveWorktreeTtlMs({ AEO_WORKTREE_TTL_HOURS: "-3" }), dayMs);
+});
+
+test("sweepStaleDelegations: removes old, keeps fresh, skips busy, disabled when TTL 0, records failures", async () => {
+    const tmpWorktreeRoot = await mkdtemp(path.join(os.tmpdir(), "aeo-sweep-"));
+    const repoRoot = path.resolve("/mock/repo/sweep");
+    const key = repoKey(repoRoot);
+    const keyDir = path.join(tmpWorktreeRoot, key);
+    const oldId = "aaaaaaaaaa";
+    const freshId = "bbbbbbbbbb";
+    const busyId = "cccccccccc";
+    const failId = "dddddddddd";
+    const now = Date.parse("2026-01-02T12:00:00.000Z");
+    const maxAgeMs = 60 * 60 * 1000;
+
+    const setupDelegation = async (id, meta) => {
+        const dir = path.join(keyDir, id);
+        await mkdir(path.join(dir, "wt"), { recursive: true });
+        await writeFile(path.join(dir, "meta.json"), JSON.stringify(meta));
+    };
+
+    await setupDelegation(oldId, { createdAt: "2026-01-02T10:00:00.000Z" });
+    await setupDelegation(freshId, {
+        createdAt: "2026-01-02T09:00:00.000Z",
+        lastActivityAt: "2026-01-02T11:30:00.000Z"
+    });
+    await setupDelegation(busyId, { createdAt: "2026-01-02T09:00:00.000Z" });
+    await setupDelegation(failId, { createdAt: "2026-01-02T08:00:00.000Z" });
+
+    const { spawnImpl } = mockGitSpawn({ code: 0 });
+
+    const rmImpl = async (target, opts) => {
+        if (String(target).includes(failId)) {
+            throw new Error("simulated remove failure");
+        }
+        return await rm(target, opts);
+    };
+
+    try {
+        const disabled = await sweepStaleDelegations({
+            repoRoot,
+            env: { AEO_WORKTREE_ROOT: tmpWorktreeRoot },
+            maxAgeMs: 0,
+            now
+        });
+        assert.equal(disabled.disabled, true);
+        assert.deepEqual(disabled.removed, []);
+
+        const result = await sweepStaleDelegations({
+            repoRoot,
+            env: { AEO_WORKTREE_ROOT: tmpWorktreeRoot },
+            maxAgeMs,
+            now,
+            isBusy: (id) => id === busyId,
+            spawnImpl,
+            rmImpl,
+            readdirImpl: readdir,
+            readFileImpl: readFile,
+            statImpl: stat
+        });
+
+        assert.equal(result.ok, true);
+        assert.ok(result.removed.includes(oldId));
+        assert.equal(result.removed.includes(freshId), false);
+        assert.equal(result.removed.includes(busyId), false);
+        const failEntry = result.failed.find((entry) => entry.id === failId);
+        assert.ok(failEntry);
+        assert.match(failEntry.error, /simulated remove failure/);
+
+        await assert.rejects(stat(path.join(keyDir, oldId)), { code: "ENOENT" });
+        await stat(path.join(keyDir, freshId));
+        await stat(path.join(keyDir, busyId));
+        await stat(path.join(keyDir, failId));
+    } finally {
+        await rm(tmpWorktreeRoot, { recursive: true, force: true });
+    }
+});
+
+test("sweepStaleDelegations: uses directory mtime only when meta.json is missing", async () => {
+    const tmpWorktreeRoot = await mkdtemp(path.join(os.tmpdir(), "aeo-sweep-dir-mtime-"));
+    const repoRoot = path.resolve("/mock/repo/sweep-dir-mtime");
+    const keyDir = path.join(tmpWorktreeRoot, repoKey(repoRoot));
+    const oldNoMetaId = "1111111111";
+    const freshNoMetaId = "2222222222";
+    const now = Date.parse("2026-01-02T12:00:00.000Z");
+    const maxAgeMs = 60 * 60 * 1000;
+    const oldDirMtime = Date.parse("2026-01-02T10:00:00.000Z");
+    const freshDirMtime = Date.parse("2026-01-02T11:30:00.000Z");
+
+    for (const id of [oldNoMetaId, freshNoMetaId]) {
+        await mkdir(path.join(keyDir, id, "wt"), { recursive: true });
+    }
+
+    const statImpl = async (target) => {
+        const real = await stat(target);
+        const normalized = path.normalize(String(target));
+        if (normalized.endsWith(oldNoMetaId)) {
+            return { ...real, mtimeMs: oldDirMtime };
+        }
+        if (normalized.endsWith(freshNoMetaId)) {
+            return { ...real, mtimeMs: freshDirMtime };
+        }
+        return real;
+    };
+
+    const { spawnImpl } = mockGitSpawn({ code: 0 });
+
+    try {
+        const result = await sweepStaleDelegations({
+            repoRoot,
+            env: { AEO_WORKTREE_ROOT: tmpWorktreeRoot },
+            maxAgeMs,
+            now,
+            spawnImpl,
+            readdirImpl: readdir,
+            readFileImpl: readFile,
+            statImpl
+        });
+
+        assert.equal(result.ok, true);
+        assert.ok(result.removed.includes(oldNoMetaId));
+        assert.equal(result.removed.includes(freshNoMetaId), false);
+        await assert.rejects(stat(path.join(keyDir, oldNoMetaId)), { code: "ENOENT" });
+        await stat(path.join(keyDir, freshNoMetaId));
+    } finally {
+        await rm(tmpWorktreeRoot, { recursive: true, force: true });
+    }
+});
+
+test("sweepStaleDelegations: patch mtime keeps stale meta fresh when injected via statImpl", async () => {
+    const tmpWorktreeRoot = await mkdtemp(path.join(os.tmpdir(), "aeo-sweep-patch-mtime-"));
+    const repoRoot = path.resolve("/mock/repo/sweep-patch-mtime");
+    const keyDir = path.join(tmpWorktreeRoot, repoKey(repoRoot));
+    const patchFreshId = "3333333333";
+    const now = Date.parse("2026-01-02T12:00:00.000Z");
+    const maxAgeMs = 60 * 60 * 1000;
+    const staleMetaTime = Date.parse("2026-01-02T09:00:00.000Z");
+    const freshPatchMtime = Date.parse("2026-01-02T11:45:00.000Z");
+
+    const dir = path.join(keyDir, patchFreshId);
+    await mkdir(path.join(dir, "wt"), { recursive: true });
+    await writeFile(
+        path.join(dir, "meta.json"),
+        JSON.stringify({ createdAt: "2026-01-02T09:00:00.000Z" }),
+        "utf8"
+    );
+    await writeFile(path.join(dir, "delegation.patch"), "patch bytes\n", "utf8");
+
+    const statImpl = async (target) => {
+        const real = await stat(target);
+        if (String(target).endsWith("delegation.patch")) {
+            return { ...real, mtimeMs: freshPatchMtime };
+        }
+        return real;
+    };
+
+    const { spawnImpl } = mockGitSpawn({ code: 0 });
+
+    try {
+        const result = await sweepStaleDelegations({
+            repoRoot,
+            env: { AEO_WORKTREE_ROOT: tmpWorktreeRoot },
+            maxAgeMs,
+            now,
+            spawnImpl,
+            readdirImpl: readdir,
+            readFileImpl: readFile,
+            statImpl
+        });
+
+        assert.equal(result.ok, true);
+        assert.equal(result.removed.includes(patchFreshId), false);
+        assert.ok(now - Math.max(staleMetaTime, freshPatchMtime) < maxAgeMs);
+        await stat(dir);
+    } finally {
+        await rm(tmpWorktreeRoot, { recursive: true, force: true });
+    }
 });
 

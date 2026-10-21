@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -26,6 +26,45 @@ export function repoKey(repoRoot) {
     return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 12);
 }
 
+const DEFAULT_WORKTREE_TTL_HOURS = 24;
+
+let firstWorktreeTtlWarned = false;
+
+export function resolveWorktreeTtlMs(env = process.env) {
+    const raw = env?.AEO_WORKTREE_TTL_HOURS;
+    if (raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "")) {
+        return DEFAULT_WORKTREE_TTL_HOURS * 60 * 60 * 1000;
+    }
+
+    const trimmed = typeof raw === "string" ? raw.trim() : String(raw);
+    if (!/^-?\d+$/.test(trimmed)) {
+        if (!firstWorktreeTtlWarned) {
+            firstWorktreeTtlWarned = true;
+            console.error(
+                `Invalid AEO_WORKTREE_TTL_HOURS "${raw}". Falling back to ${DEFAULT_WORKTREE_TTL_HOURS} hours.`
+            );
+        }
+        return DEFAULT_WORKTREE_TTL_HOURS * 60 * 60 * 1000;
+    }
+
+    const parsed = Number.parseInt(trimmed, 10);
+    if (parsed === 0) {
+        return 0;
+    }
+
+    if (parsed < 0) {
+        if (!firstWorktreeTtlWarned) {
+            firstWorktreeTtlWarned = true;
+            console.error(
+                `Invalid AEO_WORKTREE_TTL_HOURS "${raw}". Falling back to ${DEFAULT_WORKTREE_TTL_HOURS} hours.`
+            );
+        }
+        return DEFAULT_WORKTREE_TTL_HOURS * 60 * 60 * 1000;
+    }
+
+    return parsed * 60 * 60 * 1000;
+}
+
 export function resolveWorktreeRoot(env = process.env) {
     const raw = env?.AEO_WORKTREE_ROOT;
     if (typeof raw === "string") {
@@ -37,6 +76,8 @@ export function resolveWorktreeRoot(env = process.env) {
 
     return path.join(os.tmpdir(), "aeo-antigravity");
 }
+
+const DELEGATION_RM_OPTS = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 };
 
 export function delegationPaths(worktreeRoot, repoRoot, delegationId) {
     if (!isValidDelegationId(delegationId)) {
@@ -234,7 +275,7 @@ export async function createWorktree({
 
             if (addRes.code !== 0 || addRes.error) {
                 try {
-                    await rmImpl(dir, { recursive: true, force: true });
+                    await rmImpl(dir, DELEGATION_RM_OPTS);
                 } catch {
                     // best-effort cleanup
                 }
@@ -251,7 +292,8 @@ export async function createWorktree({
                 baseCommit,
                 worktreePath,
                 patchPath,
-                createdAt
+                createdAt,
+                lastActivityAt: createdAt
             };
 
             try {
@@ -262,7 +304,7 @@ export async function createWorktree({
                     { cwd: repoRoot, spawnImpl }
                 );
                 try {
-                    await rmImpl(dir, { recursive: true, force: true });
+                    await rmImpl(dir, DELEGATION_RM_OPTS);
                 } catch {
                     // best-effort cleanup
                 }
@@ -396,12 +438,43 @@ export async function loadDelegation({
     }
 }
 
+export async function touchDelegation({
+    metaPath,
+    readFileImpl = readFile,
+    writeFileImpl = writeFile,
+    now = Date.now()
+} = {}) {
+    if (!metaPath || typeof metaPath !== "string") {
+        return {
+            ok: false,
+            error: "metaPath is required and must be a string."
+        };
+    }
+
+    try {
+        const content = await readFileImpl(metaPath, "utf8");
+        const meta = JSON.parse(content);
+        if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+            return { ok: false, error: "Corrupt delegation metadata." };
+        }
+        meta.lastActivityAt = new Date(now).toISOString();
+        await writeFileImpl(metaPath, JSON.stringify(meta, null, 4), "utf8");
+        return { ok: true };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+        };
+    }
+}
+
 export async function removeWorktree({
     repoRoot,
     delegationId,
     env = process.env,
     spawnImpl = spawn,
-    rmImpl = rm
+    rmImpl = rm,
+    rmdirImpl = rmdir
 } = {}) {
     try {
         if (!isValidDelegationId(delegationId)) {
@@ -433,7 +506,7 @@ export async function removeWorktree({
             );
 
             try {
-                await rmImpl(dir, { recursive: true, force: true });
+                await rmImpl(dir, DELEGATION_RM_OPTS);
             } catch (error) {
                 return {
                     ok: false,
@@ -441,12 +514,17 @@ export async function removeWorktree({
                 };
             }
 
-            if (removeRes.code !== 0 || removeRes.error) {
-                await runGit(["worktree", "prune"], {
-                    cwd: resolvedRepoRoot,
-                    spawnImpl
-                });
+            const repoKeyDir = path.join(worktreeRoot, repoKey(resolvedRepoRoot));
+            try {
+                await rmdirImpl(repoKeyDir);
+            } catch {
+                // best-effort: ignore when parent is not empty or already gone
             }
+
+            await runGit(["worktree", "prune"], {
+                cwd: resolvedRepoRoot,
+                spawnImpl
+            });
 
             return { ok: true };
         });
@@ -455,6 +533,155 @@ export async function removeWorktree({
             ok: false,
             error: error instanceof Error ? error.message : String(error)
         };
+    }
+}
+
+export async function sweepStaleDelegations({
+    repoRoot,
+    env = process.env,
+    maxAgeMs,
+    isBusy = () => false,
+    spawnImpl = spawn,
+    rmImpl = rm,
+    rmdirImpl = rmdir,
+    readdirImpl = readdir,
+    readFileImpl = readFile,
+    statImpl = stat,
+    now = Date.now()
+} = {}) {
+    const removed = [];
+    const failed = [];
+
+    try {
+        const ageLimitMs = maxAgeMs ?? resolveWorktreeTtlMs(env);
+        if (ageLimitMs === 0) {
+            return { ok: true, removed: [], failed: [], disabled: true };
+        }
+
+        if (!repoRoot || typeof repoRoot !== "string") {
+            return { ok: true, removed, failed };
+        }
+
+        const resolvedRepoRoot = path.resolve(repoRoot);
+        const worktreeRoot = resolveWorktreeRoot(env);
+        const keyDir = path.join(worktreeRoot, repoKey(resolvedRepoRoot));
+
+        let entries;
+        try {
+            entries = await readdirImpl(keyDir, { withFileTypes: true });
+        } catch (error) {
+            if (error && typeof error === "object" && error.code === "ENOENT") {
+                return { ok: true, removed, failed };
+            }
+            failed.push({
+                id: "*",
+                error: error instanceof Error ? error.message : String(error)
+            });
+            return { ok: true, removed, failed };
+        }
+
+        for (const entry of entries) {
+            if (!entry.isDirectory()) {
+                continue;
+            }
+
+            const delegationId = entry.name;
+            if (!isValidDelegationId(delegationId)) {
+                continue;
+            }
+
+            if (isBusy(delegationId)) {
+                continue;
+            }
+
+            const dir = path.join(keyDir, delegationId);
+            const metaPath = path.join(dir, "meta.json");
+            const patchPath = path.join(dir, "delegation.patch");
+            const anchorTimes = [];
+            let hasMetaTimestamp = false;
+
+            try {
+                const content = await readFileImpl(metaPath, "utf8");
+                try {
+                    const meta = JSON.parse(content);
+                    for (const field of ["createdAt", "lastActivityAt"]) {
+                        if (meta && typeof meta[field] === "string") {
+                            const parsed = Date.parse(meta[field]);
+                            if (!Number.isNaN(parsed)) {
+                                anchorTimes.push(parsed);
+                                hasMetaTimestamp = true;
+                            }
+                        }
+                    }
+                } catch {
+                    // ignore corrupt meta timestamps
+                }
+            } catch {
+                // no readable meta.json
+            }
+
+            try {
+                const patchStat = await statImpl(patchPath);
+                anchorTimes.push(patchStat.mtimeMs);
+            } catch {
+                // patch may not exist yet
+            }
+
+            if (!hasMetaTimestamp) {
+                try {
+                    const dirStat = await statImpl(dir);
+                    anchorTimes.push(dirStat.mtimeMs);
+                } catch (error) {
+                    if (anchorTimes.length === 0) {
+                        failed.push({
+                            id: delegationId,
+                            error: error instanceof Error ? error.message : String(error)
+                        });
+                        continue;
+                    }
+                }
+            }
+
+            if (anchorTimes.length === 0) {
+                failed.push({
+                    id: delegationId,
+                    error: "Could not determine delegation age"
+                });
+                continue;
+            }
+
+            const ageAnchor = Math.max(...anchorTimes);
+
+            if (now - ageAnchor < ageLimitMs) {
+                continue;
+            }
+
+            const removeRes = await removeWorktree({
+                repoRoot: resolvedRepoRoot,
+                delegationId,
+                env,
+                spawnImpl,
+                rmImpl,
+                rmdirImpl
+            });
+
+            if (removeRes.ok) {
+                removed.push(delegationId);
+            } else {
+                failed.push({
+                    id: delegationId,
+                    error: removeRes.error ?? "removeWorktree failed"
+                });
+            }
+        }
+
+        return { ok: true, removed, failed };
+    } catch (error) {
+        failed.push({
+            id: "*",
+            error: error instanceof Error ? error.message : String(error)
+        });
+        return { ok: true, removed, failed };
     }
 }
 

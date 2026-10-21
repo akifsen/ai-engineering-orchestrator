@@ -10,7 +10,10 @@ import {
     loadDelegation,
     normalizeRepoRoot,
     removeWorktree,
-    resolveRepoRoot
+    resolveRepoRoot,
+    resolveWorktreeTtlMs,
+    sweepStaleDelegations,
+    touchDelegation
 } from "./worktree.js";
 
 export const DEFAULT_TIMEOUT_MINUTES = 15;
@@ -79,6 +82,78 @@ function waitForChildExit(child, graceMs) {
 
 const EFFORTS = new Set(["low", "medium", "high"]);
 const MODEL_SLUG = /^[A-Za-z0-9._:-]+$/;
+export const DEFAULT_FALLBACK_MODELS = ["gemini-3.8-flash-high"];
+const MODEL_ENCODES_EFFORT_REGEX = /-(low|medium|high|xhigh|max)$/i;
+
+export function modelEncodesEffort(slug) {
+    if (typeof slug !== "string") {
+        return false;
+    }
+    return MODEL_ENCODES_EFFORT_REGEX.test(slug.trim());
+}
+const QUOTA_REGEX = /quota (reached|exceeded)|resource_exhausted|\b429\b|rate[ -]limit/i;
+const AUTH_REGEX = /not logged in(to)?|login required|authentication (required|failed)|unauthenticated/i;
+
+export const FALLBACK_DIRTY_WORKSPACE_NOTE =
+    "Note: a previous attempt with another model may have partially edited this working tree before hitting a quota limit. Inspect git status and the files first and continue from the current state; do not redo completed work.";
+
+function stdoutNonJsonText(stdoutText) {
+    if (typeof stdoutText !== "string" || !stdoutText.trim()) {
+        return "";
+    }
+
+    const lines = [];
+    for (const line of stdoutText.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+            continue;
+        }
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            try {
+                JSON.parse(trimmed);
+                continue;
+            } catch {
+                // not a JSON line — include for classification
+            }
+        }
+        lines.push(trimmed);
+    }
+
+    return lines.join("\n");
+}
+
+let firstFallbackWarned = false;
+
+function warnInvalidFallbackSlug(slug) {
+    if (!firstFallbackWarned) {
+        firstFallbackWarned = true;
+        console.error(`Invalid model slug in AEO_AGY_FALLBACK_MODELS "${slug}". Dropping entry.`);
+    }
+}
+
+export function resolveFallbackModels(env = process.env) {
+    const raw = env?.AEO_AGY_FALLBACK_MODELS;
+    if (raw === undefined || raw === null) {
+        return [...DEFAULT_FALLBACK_MODELS];
+    }
+
+    const trimmed = typeof raw === "string" ? raw.trim() : String(raw);
+    if (trimmed === "" || trimmed.toLowerCase() === "none") {
+        return [];
+    }
+
+    const entries = trimmed.split(",").map((entry) => entry.trim()).filter(Boolean);
+    const valid = [];
+    for (const entry of entries) {
+        if (MODEL_SLUG.test(entry)) {
+            valid.push(entry);
+        } else {
+            warnInvalidFallbackSlug(entry);
+        }
+    }
+
+    return valid;
+}
 
 export function parseDurationMs(value) {
     const match = /^(\d+)(ms|s|m|h)$/.exec(value);
@@ -388,8 +463,127 @@ function diagnosticBlock(title, body) {
     return `\n\n---\n${title}:\n${truncate(body)}`;
 }
 
-function formatMetadata(payload) {
+export function parseAgyErrorLine(stderr) {
+    if (typeof stderr !== "string" || !stderr.trim()) {
+        return null;
+    }
+
+    const lines = stderr.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        const match = /^AGY_ERROR:\s*(.+)$/.exec(line);
+        if (match) {
+            try {
+                const parsed = JSON.parse(match[1].trim());
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    return parsed;
+                }
+            } catch {
+                // try earlier AGY_ERROR lines
+            }
+        }
+    }
+
+    return null;
+}
+
+export function extractResetHint(text) {
+    if (typeof text !== "string" || !text) {
+        return null;
+    }
+    const match = /(Resets in [^\r\n.;",]+)/i.exec(text);
+    return match ? match[1].trim() : null;
+}
+
+export function classifyAgyFailure({ stderr, stdout, payload } = {}) {
+    const stderrText = typeof stderr === "string" ? stderr : "";
+    const payloadErrorText = payload && payload.error ? String(payload.error) : "";
+    const stdoutFallbackText = payload == null ? stdoutNonJsonText(stdout) : "";
+
+    const agyError = parseAgyErrorLine(stderrText);
+
+    const isAgyQuota = Boolean(
+        agyError && (
+            agyError.status === "RESOURCE_EXHAUSTED" ||
+            agyError.error_code === 429 ||
+            agyError.error_code === "429"
+        )
+    );
+
+    const isTextQuota = Boolean(
+        QUOTA_REGEX.test(stderrText) ||
+        QUOTA_REGEX.test(payloadErrorText) ||
+        (stdoutFallbackText && QUOTA_REGEX.test(stdoutFallbackText))
+    );
+
+    if (isAgyQuota || isTextQuota) {
+        return "quota";
+    }
+
+    const isAgyAuth = Boolean(
+        agyError && (
+            agyError.status === "UNAUTHENTICATED" ||
+            agyError.status === "PERMISSION_DENIED"
+        )
+    );
+
+    const isTextAuth = Boolean(
+        AUTH_REGEX.test(stderrText) ||
+        AUTH_REGEX.test(payloadErrorText) ||
+        (stdoutFallbackText && AUTH_REGEX.test(stdoutFallbackText))
+    );
+
+    if (isAgyAuth || isTextAuth) {
+        return "auth";
+    }
+
+    return null;
+}
+
+function extractCliErrorMessage({ payload, stderr, stdout }) {
+    if (payload && payload.error) {
+        return truncate(String(payload.error), 4000);
+    }
+    const agyError = parseAgyErrorLine(stderr);
+    if (agyError && agyError.short_error) {
+        return truncate(String(agyError.short_error), 4000);
+    }
+    if (typeof stderr === "string" && stderr.trim()) {
+        const lines = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const errLine = lines.find((l) => /^error:\s*/i.test(l));
+        if (errLine) {
+            return truncate(errLine.replace(/^error:\s*/i, ""), 4000);
+        }
+        const nonAgy = lines.find((l) => !l.startsWith("AGY_ERROR:"));
+        if (nonAgy) {
+            return truncate(nonAgy, 4000);
+        }
+    }
+    if (typeof stdout === "string" && stdout.trim()) {
+        const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        if (lines.length > 0) {
+            return truncate(lines[0], 4000);
+        }
+    }
+    return null;
+}
+
+function insertLinesAfterOutcome(text, linesToInsert) {
+    if (!linesToInsert || linesToInsert.length === 0) {
+        return text;
+    }
+    const lines = text.split(/\r?\n/);
+    const outcomeIdx = lines.findIndex((l) => l.startsWith("Outcome:"));
+    if (outcomeIdx === -1) {
+        return [...linesToInsert, text].join("\n");
+    }
+    lines.splice(outcomeIdx + 1, 0, ...linesToInsert);
+    return lines.join("\n");
+}
+
+export function formatMetadata(payload, model = null) {
     const metadata = {
+        model: model ?? null,
         conversation_id: payload.conversation_id ?? null,
         status: payload.status ?? null,
         duration_seconds: payload.duration_seconds ?? null,
@@ -499,6 +693,16 @@ export function runAntigravity({
                 clearTimeout(hardTimeout);
                 hardTimeout = null;
             }
+            if (!result.attempts) {
+                result.modelUsed = model ?? null;
+                result.attempts = [
+                    {
+                        model: model ?? null,
+                        outcome: result.outcome,
+                        failureKind: result.failureKind ?? null
+                    }
+                ];
+            }
             log(`antigravity-mcp: delegation finished outcome=${result.outcome}`);
             resolve(result);
         };
@@ -531,7 +735,7 @@ export function runAntigravity({
                 ? `The process did not confirm exit within ${formatGraceSeconds(terminateGraceMs)}s; files in the working directory may still change.`
                 : null;
 
-            finish(outcome({
+            const timeoutOutcome = outcome({
                 outcomeName: "timeout",
                 isError: true,
                 text: [
@@ -542,7 +746,11 @@ export function runAntigravity({
                     unconfirmedLine,
                     diagnosticBlock("CLI diagnostics", stderr).trim()
                 ].filter(Boolean).join("\n")
-            }));
+            });
+            if (!confirmedExit) {
+                timeoutOutcome.exitUnconfirmed = true;
+            }
+            finish(timeoutOutcome);
         }, hardTimeoutMs);
 
         child.stdout?.on("data", async (chunk) => {
@@ -563,12 +771,16 @@ export function runAntigravity({
                     ? `The process did not confirm exit within ${formatGraceSeconds(terminateGraceMs)}s; files in the working directory may still change.`
                     : null;
 
-                finish(cliFailure([
+                const overflowOutcome = cliFailure([
                     "Antigravity produced more output than the bridge will collect.",
                     "The process was terminated. Treat the implementation as not completed.",
                     unconfirmedLine,
                     diagnosticBlock("Partial CLI diagnostics", stderr).trim()
-                ].filter(Boolean)));
+                ].filter(Boolean));
+                if (!confirmedExit) {
+                    overflowOutcome.exitUnconfirmed = true;
+                }
+                finish(overflowOutcome);
                 return;
             }
 
@@ -605,6 +817,59 @@ export function runAntigravity({
 
             const parsed = parseAgentEnvelope(stdout);
             const diagnostics = stderr.trim();
+            const payloadCandidate = parsed.ok ? parsed.value : null;
+
+            const isFailure = code !== 0 || (code === 0 && (!parsed.ok || payloadCandidate?.status !== "SUCCESS"));
+            if (isFailure) {
+                const failureKind = classifyAgyFailure({ stderr, stdout, payload: payloadCandidate });
+                if (failureKind === "quota" || failureKind === "auth") {
+                    const cliErrorMessage = extractCliErrorMessage({ payload: payloadCandidate, stderr, stdout });
+                    const resetHint = extractResetHint(payloadCandidate?.error) || extractResetHint(stderr) || extractResetHint(stdout);
+
+                    const textParts = [
+                        "Outcome: quota_or_auth_failure",
+                        `Kind: ${failureKind}`,
+                        `Model: ${model ?? "default"}`
+                    ];
+
+                    if (cliErrorMessage) {
+                        textParts.push(cliErrorMessage);
+                    }
+
+                    if (resetHint) {
+                        textParts.push(resetHint.endsWith(".") ? resetHint : `${resetHint}.`);
+                    }
+
+                    if (diagnostics) {
+                        textParts.push(diagnosticBlock("CLI diagnostics", diagnostics).trim());
+                    }
+
+                    if (payloadCandidate) {
+                        textParts.push("");
+                        textParts.push("Execution metadata:");
+                        textParts.push(formatMetadata(payloadCandidate, model));
+                    }
+
+                    const failureOutcome = outcome({
+                        outcomeName: "quota_or_auth_failure",
+                        isError: true,
+                        text: textParts.filter(Boolean).join("\n")
+                    });
+                    failureOutcome.failureKind = failureKind;
+                    failureOutcome.resetHint = resetHint;
+                    failureOutcome.modelUsed = model ?? null;
+                    failureOutcome.attempts = [
+                        {
+                            model: model ?? null,
+                            outcome: "quota_or_auth_failure",
+                            failureKind
+                        }
+                    ];
+
+                    finish(failureOutcome);
+                    return;
+                }
+            }
 
             if (code !== 0) {
                 finish(cliFailure([
@@ -653,7 +918,7 @@ export function runAntigravity({
                         diagnosticBlock("CLI diagnostics", diagnostics).trim(),
                         "",
                         "Execution metadata:",
-                        formatMetadata(payload)
+                        formatMetadata(payload, model)
                     ].filter(Boolean).join("\n")
                 }));
                 return;
@@ -699,7 +964,7 @@ export function runAntigravity({
                         diagnosticBlock("CLI diagnostics", diagnostics).trim(),
                         "",
                         "Execution metadata:",
-                        formatMetadata(payload),
+                        formatMetadata(payload, model),
                         advice
                     ].filter(Boolean).join("\n")
                 }));
@@ -717,7 +982,7 @@ export function runAntigravity({
                     "",
                     "---",
                     "Execution metadata:",
-                    formatMetadata(payload),
+                    formatMetadata(payload, model),
                     diagnostics
                         ? diagnosticBlock("CLI diagnostics", diagnostics).trim()
                         : ""
@@ -725,6 +990,130 @@ export function runAntigravity({
             }));
         });
     });
+}
+
+export async function runWithModelFallback({
+    prompt,
+    cwd,
+    model: initialModel,
+    effort,
+    bin,
+    cliTimeout: initialCliTimeout,
+    hardTimeoutMs: initialHardTimeoutMs,
+    terminateGraceMs,
+    ...dependencies
+}) {
+    const env = dependencies.env ?? process.env;
+    const log = dependencies.log ?? (() => {});
+    const hardTimeoutMs = initialHardTimeoutMs ?? HARD_TIMEOUT_MS;
+    const cliTimeout = initialCliTimeout ?? CLI_TIMEOUT;
+    const fallbackList = resolveFallbackModels(env);
+
+    const candidateFallbacks = [];
+    for (const fb of fallbackList) {
+        if (fb === initialModel) {
+            continue;
+        }
+        if (!candidateFallbacks.includes(fb)) {
+            candidateFallbacks.push(fb);
+        }
+    }
+
+    const attempts = [];
+    const fallbackLines = [];
+    let currentModel = initialModel;
+    let currentHardTimeoutMs = hardTimeoutMs;
+    let currentCliTimeout = cliTimeout;
+    const startTime = (dependencies.now ?? Date.now)();
+
+    const modelsToTry = [initialModel, ...candidateFallbacks];
+    let lastResult = null;
+
+    for (let i = 0; i < modelsToTry.length; i++) {
+        currentModel = modelsToTry[i];
+        const isFallback = i > 0;
+        const attemptEffort = (isFallback && modelEncodesEffort(currentModel)) ? undefined : effort;
+        const attemptPrompt = isFallback
+            ? `${FALLBACK_DIRTY_WORKSPACE_NOTE}\n\n${prompt}`
+            : prompt;
+
+        const result = await runAntigravity({
+            prompt: attemptPrompt,
+            cwd,
+            model: currentModel,
+            effort: attemptEffort,
+            bin,
+            cliTimeout: currentCliTimeout,
+            hardTimeoutMs: currentHardTimeoutMs,
+            terminateGraceMs,
+            ...dependencies,
+            log
+        });
+
+        lastResult = result;
+        attempts.push({
+            model: currentModel ?? null,
+            outcome: result.outcome,
+            failureKind: result.failureKind ?? null
+        });
+
+        if (result.outcome !== "quota_or_auth_failure" || result.failureKind !== "quota") {
+            break;
+        }
+
+        if (i + 1 >= modelsToTry.length) {
+            break;
+        }
+
+        const nextModel = modelsToTry[i + 1];
+        const now = (dependencies.now ?? Date.now)();
+        const elapsed = now - startTime;
+        const remaining = hardTimeoutMs - elapsed;
+
+        if (remaining < 2 * 60 * 1000) {
+            const skipLine = "Model fallback skipped: not enough time left in the delegation budget.";
+            lastResult.text = insertLinesAfterOutcome(lastResult.text, [...fallbackLines, skipLine]);
+            lastResult.modelUsed = currentModel ?? null;
+            lastResult.attempts = attempts;
+            return lastResult;
+        }
+
+        currentHardTimeoutMs = remaining;
+        const nextCliMinutes = Math.max(1, Math.floor((remaining - 60000) / 60000));
+        currentCliTimeout = `${nextCliMinutes}m`;
+
+        const fromSlug = currentModel ?? "default";
+        const toSlug = nextModel;
+        const cleanResetHint = result.resetHint ? result.resetHint.replace(/[.;]+$/, "") : null;
+        const resetSuffix = cleanResetHint ? `; ${cleanResetHint}` : "";
+        const effortOmitted = Boolean(effort) && modelEncodesEffort(toSlug);
+        const effortSuffix = effortOmitted ? " (effort omitted: encoded in model slug)" : "";
+        const fallbackLine = `Model fallback: ${fromSlug} -> ${toSlug} (quota exhausted${resetSuffix})${effortSuffix}`;
+        fallbackLines.push(fallbackLine);
+
+        log(`antigravity-mcp: model fallback ${fromSlug} -> ${toSlug} (quota)`);
+    }
+
+    const extraLines = [...fallbackLines];
+
+    if (
+        lastResult.outcome === "quota_or_auth_failure" &&
+        lastResult.failureKind === "quota" &&
+        attempts.length > 1 &&
+        attempts.every((a) => a.outcome === "quota_or_auth_failure" && a.failureKind === "quota")
+    ) {
+        const modelsList = attempts.map((a) => a.model ?? "default").join(", ");
+        extraLines.push(`All configured models hit quota: ${modelsList}.`);
+    }
+
+    if (extraLines.length > 0) {
+        lastResult.text = insertLinesAfterOutcome(lastResult.text, extraLines);
+    }
+
+    lastResult.modelUsed = currentModel ?? null;
+    lastResult.attempts = attempts;
+
+    return lastResult;
 }
 
 export async function delegateToAntigravity(input, dependencies = {}) {
@@ -743,7 +1132,7 @@ export async function delegateToAntigravity(input, dependencies = {}) {
         const terminateGraceMs = dependencies.terminateGraceMs ?? TERMINATE_GRACE_MS;
 
         if (isolation === "none") {
-            return await runAntigravity({
+            return await runWithModelFallback({
                 cliTimeout,
                 hardTimeoutMs,
                 terminateGraceMs,
@@ -762,6 +1151,10 @@ export async function delegateToAntigravity(input, dependencies = {}) {
         const createWorktreeImpl = worktreeDeps.createWorktree ?? createWorktree;
         const loadDelegationImpl = worktreeDeps.loadDelegation ?? loadDelegation;
         const buildPatchImpl = worktreeDeps.buildPatch ?? buildPatch;
+        const removeWorktreeImpl = worktreeDeps.removeWorktree ?? removeWorktree;
+        const sweepStaleDelegationsImpl = worktreeDeps.sweepStaleDelegations ?? sweepStaleDelegations;
+        const touchDelegationImpl = worktreeDeps.touchDelegation ?? touchDelegation;
+        const log = dependencies.log ?? (() => {});
 
         let delegationContext;
         const isRevision = Boolean(delegationId);
@@ -803,12 +1196,19 @@ export async function delegateToAntigravity(input, dependencies = {}) {
             busyKey = candidateKey;
             busyDelegations.add(busyKey);
 
+            try {
+                await touchDelegationImpl({ metaPath: loadRes.metaPath });
+            } catch {
+                // best-effort activity timestamp
+            }
+
             delegationContext = {
                 delegationId: loadRes.delegationId,
                 repoRoot: loadRes.repoRoot,
                 worktreePath: loadRes.worktreePath,
                 baseCommit: loadRes.baseCommit,
                 patchPath: loadRes.patchPath,
+                metaPath: loadRes.metaPath,
                 mainTreeStatus: null
             };
         } else {
@@ -833,18 +1233,42 @@ export async function delegateToAntigravity(input, dependencies = {}) {
             busyKey = makeBusyKey(creation.repoRoot, creation.delegationId);
             busyDelegations.add(busyKey);
 
+            const staleSweepLines = [];
+            try {
+                const sweepRes = await sweepStaleDelegationsImpl({
+                    repoRoot: creation.repoRoot,
+                    env,
+                    maxAgeMs: resolveWorktreeTtlMs(env),
+                    isBusy: (id) => busyDelegations.has(makeBusyKey(creation.repoRoot, id)),
+                    spawnImpl: gitSpawnImpl
+                });
+                if (sweepRes.removed?.length) {
+                    staleSweepLines.push(
+                        `Stale delegations removed: ${sweepRes.removed.join(", ")}`
+                    );
+                }
+                for (const entry of sweepRes.failed ?? []) {
+                    log(`antigravity-mcp: stale sweep failed id=${entry.id}: ${entry.error}`);
+                    staleSweepLines.push(`Stale sweep failures: ${entry.id} (${entry.error})`);
+                }
+            } catch (error) {
+                log(`antigravity-mcp: stale sweep failed id=*: ${errorText(error)}`);
+            }
+
             delegationContext = {
                 delegationId: creation.delegationId,
                 repoRoot: creation.repoRoot,
                 worktreePath: creation.worktreePath,
                 baseCommit: creation.baseCommit,
                 patchPath: creation.patchPath,
-                mainTreeStatus: creation.mainTreeStatus
+                metaPath: creation.metaPath,
+                mainTreeStatus: creation.mainTreeStatus,
+                staleSweepLines
             };
         }
 
         try {
-            const agyResult = await runAntigravity({
+            const agyResult = await runWithModelFallback({
                 cliTimeout,
                 hardTimeoutMs,
                 terminateGraceMs,
@@ -867,15 +1291,56 @@ export async function delegateToAntigravity(input, dependencies = {}) {
                 patchRes = { ok: false, error: errorText(error) };
             }
 
+            if (delegationContext.metaPath) {
+                try {
+                    await touchDelegationImpl({ metaPath: delegationContext.metaPath });
+                } catch {
+                    // best-effort activity timestamp
+                }
+            }
+
+            let worktreeRemoved = false;
+            const shouldAutoRemoveWorktree = Boolean(
+                patchRes.ok &&
+                !patchRes.hasChanges &&
+                agyResult.outcome !== "timeout" &&
+                !agyResult.exitUnconfirmed
+            );
+
+            if (shouldAutoRemoveWorktree) {
+                try {
+                    const removeRes = await removeWorktreeImpl({
+                        repoRoot: delegationContext.repoRoot,
+                        delegationId: delegationContext.delegationId,
+                        env,
+                        spawnImpl: gitSpawnImpl
+                    });
+                    if (removeRes.ok) {
+                        worktreeRemoved = true;
+                    }
+                } catch {
+                    // auto-remove is best-effort
+                }
+            }
+
             const isolationLines = [
                 "---",
                 "Isolation: worktree",
                 `Delegation ID: ${delegationContext.delegationId}`,
-                `Worktree: ${delegationContext.worktreePath}`,
+                worktreeRemoved
+                    ? `Worktree: ${delegationContext.worktreePath} (removed)`
+                    : `Worktree: ${delegationContext.worktreePath}`,
                 `Base commit: ${delegationContext.baseCommit}`,
-                `Patch: ${delegationContext.patchPath}`,
-                "Main tree was not modified by this run. Nothing lands in the main tree until apply_delegation."
+                worktreeRemoved
+                    ? `Patch: ${delegationContext.patchPath} (removed)`
+                    : `Patch: ${delegationContext.patchPath}`
             ];
+
+            if (!worktreeRemoved) {
+                isolationLines.push(
+                    "Main tree was not modified by this run. Nothing lands in the main tree until apply_delegation."
+                );
+            }
 
             if (patchRes.ok) {
                 isolationLines.push("Changes:");
@@ -889,7 +1354,22 @@ export async function delegateToAntigravity(input, dependencies = {}) {
                 isolationLines.push(delegationContext.mainTreeStatus ? delegationContext.mainTreeStatus : "clean");
             }
 
-            isolationLines.push("Next: review with the patch/worktree, then call apply_delegation or discard_delegation with this delegation ID.");
+            if (delegationContext.staleSweepLines?.length) {
+                isolationLines.push(...delegationContext.staleSweepLines);
+            }
+
+            if (worktreeRemoved) {
+                isolationLines.push(
+                    "Worktree removed automatically: the run produced no changes."
+                );
+                isolationLines.push(
+                    "Revision with this delegation ID is no longer possible; delegate again for follow-up work."
+                );
+            } else {
+                isolationLines.push(
+                    "Next: review with the patch/worktree, then call apply_delegation or discard_delegation with this delegation ID."
+                );
+            }
 
             const isError = !patchRes.ok ? true : agyResult.isError;
             const text = `${agyResult.text}\n\n${isolationLines.join("\n")}`;
@@ -898,12 +1378,16 @@ export async function delegateToAntigravity(input, dependencies = {}) {
                 outcome: agyResult.outcome,
                 isError,
                 text,
+                modelUsed: agyResult.modelUsed,
+                attempts: agyResult.attempts,
+                ...(agyResult.failureKind ? { failureKind: agyResult.failureKind } : {}),
                 delegation: {
                     delegationId: delegationContext.delegationId,
                     worktreePath: delegationContext.worktreePath,
                     baseCommit: delegationContext.baseCommit,
                     patchPath: delegationContext.patchPath,
-                    hasChanges: Boolean(patchRes.ok && patchRes.hasChanges)
+                    hasChanges: Boolean(patchRes.ok && patchRes.hasChanges),
+                    ...(worktreeRemoved ? { worktreeRemoved: true } : {})
                 }
             };
         } finally {
@@ -959,6 +1443,8 @@ export async function applyDelegation(input, dependencies = {}) {
         const worktreeDeps = dependencies.worktree ?? {};
         const loadDelegationImpl = worktreeDeps.loadDelegation ?? loadDelegation;
         const applyPatchImpl = worktreeDeps.applyPatch ?? applyPatch;
+        const removeWorktreeImpl = worktreeDeps.removeWorktree ?? removeWorktree;
+        const keepWorktree = input?.keepWorktree === true;
 
         const loadRes = await loadDelegationImpl({
             cwd: validatedCwd,
@@ -992,6 +1478,8 @@ export async function applyDelegation(input, dependencies = {}) {
             });
         }
 
+        busyDelegations.add(busyKey);
+        try {
         const applyRes = await applyPatchImpl({
             repoRoot: loadRes.repoRoot,
             patchPath: loadRes.patchPath,
@@ -1026,27 +1514,62 @@ export async function applyDelegation(input, dependencies = {}) {
         }
 
         if (applyRes.applied === false || applyRes.reason === "no changes") {
+            const lines = [
+                "Outcome: no_changes",
+                `Delegation ${delegationId} has no changes to apply.`
+            ];
+            if (!keepWorktree) {
+                const removeRes = await removeWorktreeImpl({
+                    repoRoot: loadRes.repoRoot,
+                    delegationId,
+                    env,
+                    spawnImpl: gitSpawnImpl
+                });
+                if (removeRes.ok) {
+                    lines.push("Worktree removed.");
+                } else {
+                    lines.push(
+                        `Worktree cleanup failed: ${removeRes.error}; call discard_delegation.`
+                    );
+                }
+            }
             return outcome({
                 outcomeName: "no_changes",
                 isError: false,
-                text: [
-                    "Outcome: no_changes",
-                    `Delegation ${delegationId} has no changes to apply.`
-                ].join("\n")
+                text: lines.join("\n")
             });
+        }
+
+        const appliedLines = [
+            "Outcome: applied",
+            `Delegation ${delegationId} applied successfully.`,
+            "Changes are now unstaged in the main working tree.",
+            "Team Lead must diff and re-run tests."
+        ];
+        if (!keepWorktree) {
+            const removeRes = await removeWorktreeImpl({
+                repoRoot: loadRes.repoRoot,
+                delegationId,
+                env,
+                spawnImpl: gitSpawnImpl
+            });
+            if (removeRes.ok) {
+                appliedLines.push("Worktree removed.");
+            } else {
+                appliedLines.push(
+                    `Worktree cleanup failed: ${removeRes.error}; call discard_delegation.`
+                );
+            }
         }
 
         return outcome({
             outcomeName: "applied",
             isError: false,
-            text: [
-                "Outcome: applied",
-                `Delegation ${delegationId} applied successfully.`,
-                "Changes are now unstaged in the main working tree.",
-                "Team Lead must diff and re-run tests.",
-                "The worktree still exists until discard_delegation."
-            ].join("\n")
+            text: appliedLines.join("\n")
         });
+        } finally {
+            busyDelegations.delete(busyKey);
+        }
     } catch (error) {
         return outcome({
             outcomeName: "apply_error",
@@ -1111,18 +1634,6 @@ export async function discardDelegation(input, dependencies = {}) {
         }
 
         let repoRoot = repoRes.repoRoot;
-        const busyKey = makeBusyKey(repoRoot, delegationId);
-        if (busyDelegations.has(busyKey)) {
-            return outcome({
-                outcomeName: "validation_failure",
-                isError: true,
-                text: [
-                    "Outcome: validation_failure",
-                    "The bridge rejected the discard request.",
-                    `Delegation ${delegationId} is already running; wait for it to finish before discarding it.`
-                ].join("\n")
-            });
-        }
 
         const loadRes = await loadDelegationImpl({
             cwd: validatedCwd,
@@ -1152,33 +1663,51 @@ export async function discardDelegation(input, dependencies = {}) {
             });
         }
 
-        const removeRes = await removeWorktreeImpl({
-            repoRoot,
-            delegationId,
-            env,
-            spawnImpl: gitSpawnImpl
-        });
-
-        if (!removeRes.ok) {
+        const busyKey = makeBusyKey(repoRoot, delegationId);
+        if (busyDelegations.has(busyKey)) {
             return outcome({
-                outcomeName: "discard_error",
+                outcomeName: "validation_failure",
                 isError: true,
                 text: [
-                    "Outcome: discard_error",
-                    `Failed to discard delegation ${delegationId}:`,
-                    removeRes.error
-                ].filter(Boolean).join("\n")
+                    "Outcome: validation_failure",
+                    "The bridge rejected the discard request.",
+                    `Delegation ${delegationId} is already running; wait for it to finish before discarding it.`
+                ].join("\n")
             });
         }
 
-        return outcome({
-            outcomeName: "discarded",
-            isError: false,
-            text: [
-                "Outcome: discarded",
-                `Delegation ${delegationId} discarded.`
-            ].join("\n")
-        });
+        busyDelegations.add(busyKey);
+        try {
+            const removeRes = await removeWorktreeImpl({
+                repoRoot,
+                delegationId,
+                env,
+                spawnImpl: gitSpawnImpl
+            });
+
+            if (!removeRes.ok) {
+                return outcome({
+                    outcomeName: "discard_error",
+                    isError: true,
+                    text: [
+                        "Outcome: discard_error",
+                        `Failed to discard delegation ${delegationId}:`,
+                        removeRes.error
+                    ].filter(Boolean).join("\n")
+                });
+            }
+
+            return outcome({
+                outcomeName: "discarded",
+                isError: false,
+                text: [
+                    "Outcome: discarded",
+                    `Delegation ${delegationId} discarded.`
+                ].join("\n")
+            });
+        } finally {
+            busyDelegations.delete(busyKey);
+        }
     } catch (error) {
         return outcome({
             outcomeName: "discard_error",
