@@ -128,14 +128,21 @@ export function createServer() {
                 delegationId: z
                     .string()
                     .regex(/^[a-f0-9]{10}$/)
-                    .describe("10-character hexadecimal delegation ID.")
+                    .describe("10-character hexadecimal delegation ID."),
+                keepWorktree: z
+                    .boolean()
+                    .optional()
+                    .describe(
+                        "Optional. Keep the worktree after a successful apply instead of removing it."
+                    )
             })
         },
-        async ({ cwd, delegationId }) => {
+        async ({ cwd, delegationId, keepWorktree }) => {
             const result = await applyDelegation(
                 {
                     cwd,
-                    delegationId
+                    delegationId,
+                    keepWorktree
                 },
                 {
                     log: (message) => {

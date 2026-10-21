@@ -11,7 +11,10 @@ import {
     loadDelegation,
     normalizeRepoRoot,
     removeWorktree,
-    resolveRepoRoot
+    resolveRepoRoot,
+    resolveWorktreeTtlMs,
+    sweepStaleDelegations,
+    touchDelegation
 } from "./worktree.js";
 
 export const DEFAULT_MODEL = "composer-2.5";
@@ -678,7 +681,7 @@ export async function runCursor({
                 ? `The process did not confirm exit within ${formatGraceSeconds(terminateGraceMs)}s; files in the working directory may still change.`
                 : null;
 
-            finish(outcome({
+            const timeoutOutcome = outcome({
                 outcomeName: "timeout",
                 isError: true,
                 text: [
@@ -688,7 +691,11 @@ export async function runCursor({
                     unconfirmedLine,
                     diagnosticBlock("CLI diagnostics", stderr).trim()
                 ].filter(Boolean).join("\n")
-            }));
+            });
+            if (!confirmedExit) {
+                timeoutOutcome.exitUnconfirmed = true;
+            }
+            finish(timeoutOutcome);
         }, hardTimeoutMs);
 
         child.stdout?.on("data", async (chunk) => {
@@ -709,12 +716,16 @@ export async function runCursor({
                     ? `The process did not confirm exit within ${formatGraceSeconds(terminateGraceMs)}s; files in the working directory may still change.`
                     : null;
 
-                finish(cliFailure([
+                const overflowOutcome = cliFailure([
                     "Cursor produced more output than the bridge will collect.",
                     "The process was terminated. Treat the implementation as not completed.",
                     unconfirmedLine,
                     diagnosticBlock("Partial CLI diagnostics", stderr).trim()
-                ].filter(Boolean)));
+                ].filter(Boolean));
+                if (!confirmedExit) {
+                    overflowOutcome.exitUnconfirmed = true;
+                }
+                finish(overflowOutcome);
                 return;
             }
 
@@ -922,6 +933,10 @@ export async function delegateToCursor(input, dependencies = {}) {
         const createWorktreeImpl = worktreeDeps.createWorktree ?? createWorktree;
         const loadDelegationImpl = worktreeDeps.loadDelegation ?? loadDelegation;
         const buildPatchImpl = worktreeDeps.buildPatch ?? buildPatch;
+        const removeWorktreeImpl = worktreeDeps.removeWorktree ?? removeWorktree;
+        const sweepStaleDelegationsImpl = worktreeDeps.sweepStaleDelegations ?? sweepStaleDelegations;
+        const touchDelegationImpl = worktreeDeps.touchDelegation ?? touchDelegation;
+        const log = dependencies.log ?? (() => {});
 
         let delegationContext;
         const isRevision = Boolean(delegationId);
@@ -963,12 +978,19 @@ export async function delegateToCursor(input, dependencies = {}) {
             busyKey = candidateKey;
             busyDelegations.add(busyKey);
 
+            try {
+                await touchDelegationImpl({ metaPath: loadRes.metaPath });
+            } catch {
+                // best-effort activity timestamp
+            }
+
             delegationContext = {
                 delegationId: loadRes.delegationId,
                 repoRoot: loadRes.repoRoot,
                 worktreePath: loadRes.worktreePath,
                 baseCommit: loadRes.baseCommit,
                 patchPath: loadRes.patchPath,
+                metaPath: loadRes.metaPath,
                 mainTreeStatus: null
             };
         } else {
@@ -993,13 +1015,37 @@ export async function delegateToCursor(input, dependencies = {}) {
             busyKey = makeBusyKey(creation.repoRoot, creation.delegationId);
             busyDelegations.add(busyKey);
 
+            const staleSweepLines = [];
+            try {
+                const sweepRes = await sweepStaleDelegationsImpl({
+                    repoRoot: creation.repoRoot,
+                    env,
+                    maxAgeMs: resolveWorktreeTtlMs(env),
+                    isBusy: (id) => busyDelegations.has(makeBusyKey(creation.repoRoot, id)),
+                    spawnImpl: gitSpawnImpl
+                });
+                if (sweepRes.removed?.length) {
+                    staleSweepLines.push(
+                        `Stale delegations removed: ${sweepRes.removed.join(", ")}`
+                    );
+                }
+                for (const entry of sweepRes.failed ?? []) {
+                    log(`cursor-mcp: stale sweep failed id=${entry.id}: ${entry.error}`);
+                    staleSweepLines.push(`Stale sweep failures: ${entry.id} (${entry.error})`);
+                }
+            } catch (error) {
+                log(`cursor-mcp: stale sweep failed id=*: ${errorText(error)}`);
+            }
+
             delegationContext = {
                 delegationId: creation.delegationId,
                 repoRoot: creation.repoRoot,
                 worktreePath: creation.worktreePath,
                 baseCommit: creation.baseCommit,
                 patchPath: creation.patchPath,
-                mainTreeStatus: creation.mainTreeStatus
+                metaPath: creation.metaPath,
+                mainTreeStatus: creation.mainTreeStatus,
+                staleSweepLines
             };
         }
 
@@ -1026,15 +1072,56 @@ export async function delegateToCursor(input, dependencies = {}) {
                 patchRes = { ok: false, error: errorText(error) };
             }
 
+            if (delegationContext.metaPath) {
+                try {
+                    await touchDelegationImpl({ metaPath: delegationContext.metaPath });
+                } catch {
+                    // best-effort activity timestamp
+                }
+            }
+
+            let worktreeRemoved = false;
+            const shouldAutoRemoveWorktree = Boolean(
+                patchRes.ok &&
+                !patchRes.hasChanges &&
+                cursorResult.outcome !== "timeout" &&
+                !cursorResult.exitUnconfirmed
+            );
+
+            if (shouldAutoRemoveWorktree) {
+                try {
+                    const removeRes = await removeWorktreeImpl({
+                        repoRoot: delegationContext.repoRoot,
+                        delegationId: delegationContext.delegationId,
+                        env,
+                        spawnImpl: gitSpawnImpl
+                    });
+                    if (removeRes.ok) {
+                        worktreeRemoved = true;
+                    }
+                } catch {
+                    // auto-remove is best-effort
+                }
+            }
+
             const isolationLines = [
                 "---",
                 "Isolation: worktree",
                 `Delegation ID: ${delegationContext.delegationId}`,
-                `Worktree: ${delegationContext.worktreePath}`,
+                worktreeRemoved
+                    ? `Worktree: ${delegationContext.worktreePath} (removed)`
+                    : `Worktree: ${delegationContext.worktreePath}`,
                 `Base commit: ${delegationContext.baseCommit}`,
-                `Patch: ${delegationContext.patchPath}`,
-                "Main tree was not modified by this run. Nothing lands in the main tree until apply_delegation."
+                worktreeRemoved
+                    ? `Patch: ${delegationContext.patchPath} (removed)`
+                    : `Patch: ${delegationContext.patchPath}`
             ];
+
+            if (!worktreeRemoved) {
+                isolationLines.push(
+                    "Main tree was not modified by this run. Nothing lands in the main tree until apply_delegation."
+                );
+            }
 
             if (patchRes.ok) {
                 isolationLines.push("Changes:");
@@ -1048,7 +1135,22 @@ export async function delegateToCursor(input, dependencies = {}) {
                 isolationLines.push(delegationContext.mainTreeStatus ? delegationContext.mainTreeStatus : "clean");
             }
 
-            isolationLines.push("Next: review with the patch/worktree, then call apply_delegation or discard_delegation with this delegation ID.");
+            if (delegationContext.staleSweepLines?.length) {
+                isolationLines.push(...delegationContext.staleSweepLines);
+            }
+
+            if (worktreeRemoved) {
+                isolationLines.push(
+                    "Worktree removed automatically: the run produced no changes."
+                );
+                isolationLines.push(
+                    "Revision with this delegation ID is no longer possible; delegate again for follow-up work."
+                );
+            } else {
+                isolationLines.push(
+                    "Next: review with the patch/worktree, then call apply_delegation or discard_delegation with this delegation ID."
+                );
+            }
 
             const isError = !patchRes.ok ? true : cursorResult.isError;
             const text = `${cursorResult.text}\n\n${isolationLines.join("\n")}`;
@@ -1062,7 +1164,8 @@ export async function delegateToCursor(input, dependencies = {}) {
                     worktreePath: delegationContext.worktreePath,
                     baseCommit: delegationContext.baseCommit,
                     patchPath: delegationContext.patchPath,
-                    hasChanges: Boolean(patchRes.ok && patchRes.hasChanges)
+                    hasChanges: Boolean(patchRes.ok && patchRes.hasChanges),
+                    ...(worktreeRemoved ? { worktreeRemoved: true } : {})
                 }
             };
         } finally {
@@ -1118,6 +1221,8 @@ export async function applyDelegation(input, dependencies = {}) {
         const worktreeDeps = dependencies.worktree ?? {};
         const loadDelegationImpl = worktreeDeps.loadDelegation ?? loadDelegation;
         const applyPatchImpl = worktreeDeps.applyPatch ?? applyPatch;
+        const removeWorktreeImpl = worktreeDeps.removeWorktree ?? removeWorktree;
+        const keepWorktree = input?.keepWorktree === true;
 
         const loadRes = await loadDelegationImpl({
             cwd: validatedCwd,
@@ -1151,6 +1256,8 @@ export async function applyDelegation(input, dependencies = {}) {
             });
         }
 
+        busyDelegations.add(busyKey);
+        try {
         const applyRes = await applyPatchImpl({
             repoRoot: loadRes.repoRoot,
             patchPath: loadRes.patchPath,
@@ -1185,27 +1292,62 @@ export async function applyDelegation(input, dependencies = {}) {
         }
 
         if (applyRes.applied === false || applyRes.reason === "no changes") {
+            const lines = [
+                "Outcome: no_changes",
+                `Delegation ${delegationId} has no changes to apply.`
+            ];
+            if (!keepWorktree) {
+                const removeRes = await removeWorktreeImpl({
+                    repoRoot: loadRes.repoRoot,
+                    delegationId,
+                    env,
+                    spawnImpl: gitSpawnImpl
+                });
+                if (removeRes.ok) {
+                    lines.push("Worktree removed.");
+                } else {
+                    lines.push(
+                        `Worktree cleanup failed: ${removeRes.error}; call discard_delegation.`
+                    );
+                }
+            }
             return outcome({
                 outcomeName: "no_changes",
                 isError: false,
-                text: [
-                    "Outcome: no_changes",
-                    `Delegation ${delegationId} has no changes to apply.`
-                ].join("\n")
+                text: lines.join("\n")
             });
+        }
+
+        const appliedLines = [
+            "Outcome: applied",
+            `Delegation ${delegationId} applied successfully.`,
+            "Changes are now unstaged in the main working tree.",
+            "Team Lead must diff and re-run tests."
+        ];
+        if (!keepWorktree) {
+            const removeRes = await removeWorktreeImpl({
+                repoRoot: loadRes.repoRoot,
+                delegationId,
+                env,
+                spawnImpl: gitSpawnImpl
+            });
+            if (removeRes.ok) {
+                appliedLines.push("Worktree removed.");
+            } else {
+                appliedLines.push(
+                    `Worktree cleanup failed: ${removeRes.error}; call discard_delegation.`
+                );
+            }
         }
 
         return outcome({
             outcomeName: "applied",
             isError: false,
-            text: [
-                "Outcome: applied",
-                `Delegation ${delegationId} applied successfully.`,
-                "Changes are now unstaged in the main working tree.",
-                "Team Lead must diff and re-run tests.",
-                "The worktree still exists until discard_delegation."
-            ].join("\n")
+            text: appliedLines.join("\n")
         });
+        } finally {
+            busyDelegations.delete(busyKey);
+        }
     } catch (error) {
         return outcome({
             outcomeName: "apply_error",
@@ -1270,18 +1412,6 @@ export async function discardDelegation(input, dependencies = {}) {
         }
 
         let repoRoot = repoRes.repoRoot;
-        const busyKey = makeBusyKey(repoRoot, delegationId);
-        if (busyDelegations.has(busyKey)) {
-            return outcome({
-                outcomeName: "validation_failure",
-                isError: true,
-                text: [
-                    "Outcome: validation_failure",
-                    "The bridge rejected the discard request.",
-                    `Delegation ${delegationId} is already running; wait for it to finish before discarding it.`
-                ].join("\n")
-            });
-        }
 
         const loadRes = await loadDelegationImpl({
             cwd: validatedCwd,
@@ -1311,33 +1441,51 @@ export async function discardDelegation(input, dependencies = {}) {
             });
         }
 
-        const removeRes = await removeWorktreeImpl({
-            repoRoot,
-            delegationId,
-            env,
-            spawnImpl: gitSpawnImpl
-        });
-
-        if (!removeRes.ok) {
+        const busyKey = makeBusyKey(repoRoot, delegationId);
+        if (busyDelegations.has(busyKey)) {
             return outcome({
-                outcomeName: "discard_error",
+                outcomeName: "validation_failure",
                 isError: true,
                 text: [
-                    "Outcome: discard_error",
-                    `Failed to discard delegation ${delegationId}:`,
-                    removeRes.error
-                ].filter(Boolean).join("\n")
+                    "Outcome: validation_failure",
+                    "The bridge rejected the discard request.",
+                    `Delegation ${delegationId} is already running; wait for it to finish before discarding it.`
+                ].join("\n")
             });
         }
 
-        return outcome({
-            outcomeName: "discarded",
-            isError: false,
-            text: [
-                "Outcome: discarded",
-                `Delegation ${delegationId} discarded.`
-            ].join("\n")
-        });
+        busyDelegations.add(busyKey);
+        try {
+            const removeRes = await removeWorktreeImpl({
+                repoRoot,
+                delegationId,
+                env,
+                spawnImpl: gitSpawnImpl
+            });
+
+            if (!removeRes.ok) {
+                return outcome({
+                    outcomeName: "discard_error",
+                    isError: true,
+                    text: [
+                        "Outcome: discard_error",
+                        `Failed to discard delegation ${delegationId}:`,
+                        removeRes.error
+                    ].filter(Boolean).join("\n")
+                });
+            }
+
+            return outcome({
+                outcomeName: "discarded",
+                isError: false,
+                text: [
+                    "Outcome: discarded",
+                    `Delegation ${delegationId} discarded.`
+                ].join("\n")
+            });
+        } finally {
+            busyDelegations.delete(busyKey);
+        }
     } catch (error) {
         return outcome({
             outcomeName: "discard_error",

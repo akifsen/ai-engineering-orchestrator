@@ -23,6 +23,14 @@ import {
     parseDurationMs,
     resolveAgyBin,
     resolveTimeouts,
+    classifyAgyFailure,
+    FALLBACK_DIRTY_WORKSPACE_NOTE,
+    extractResetHint,
+    formatMetadata,
+    modelEncodesEffort,
+    parseAgyErrorLine,
+    resolveFallbackModels,
+    runWithModelFallback,
     truncate
 } from "../lib/delegate.js";
 
@@ -561,6 +569,59 @@ test("stdout overflow waits for child close event before finishing", async () =>
     }
 });
 
+test("stdout overflow with unconfirmed exit does not auto-remove worktree on isolation", async () => {
+    const directory = await tempDirectory();
+    const fakeWorktreePath = path.join(directory, "mock-worktree");
+    const fakePatchPath = path.join(directory, "mock.patch");
+    const { spawnImpl } = mockSpawn({
+        stdout: "y".repeat(100),
+        hang: true
+    });
+    let removeWorktreeCalled = false;
+
+    const mockWorktree = {
+        createWorktree: async ({ cwd }) => ({
+            ok: true,
+            delegationId: "abcdef0123",
+            repoRoot: cwd,
+            baseCommit: "commit123",
+            worktreePath: fakeWorktreePath,
+            patchPath: fakePatchPath,
+            metaPath: path.join(directory, "meta.json"),
+            mainTreeStatus: "clean"
+        }),
+        buildPatch: async () => ({
+            ok: true,
+            hasChanges: false,
+            patchPath: fakePatchPath,
+            diffstat: ""
+        }),
+        removeWorktree: async () => {
+            removeWorktreeCalled = true;
+            return { ok: true };
+        },
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
+    };
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Task", cwd: directory, isolation: "worktree" },
+            {
+                spawnImpl,
+                worktree: mockWorktree,
+                maxCollectChars: 20,
+                terminateGraceMs: 50,
+                terminateProcess: () => {}
+            }
+        );
+        assert.equal(result.outcome, "cli_failure");
+        assert.equal(removeWorktreeCalled, false);
+        assert.equal(result.delegation.worktreeRemoved, undefined);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
 test("stdout overflow adds warning line when child does not exit within grace period", async () => {
     const directory = await tempDirectory();
     const { spawnImpl } = mockSpawn({
@@ -1028,7 +1089,9 @@ test("worktree: hasChanges false -> 'No changes.' and clean status", async () =>
             hasChanges: false,
             patchPath: fakePatchPath,
             diffstat: ""
-        })
+        }),
+        removeWorktree: async () => ({ ok: true }),
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
     };
 
     try {
@@ -1042,6 +1105,21 @@ test("worktree: hasChanges false -> 'No changes.' and clean status", async () =>
         assert.equal(result.delegation.hasChanges, false);
         assert.ok(result.text.includes("Changes:\nNo changes."));
         assert.ok(result.text.includes("Main tree status at worktree creation:\nclean"));
+        assert.ok(result.text.includes(`Worktree: ${fakeWorktreePath} (removed)`));
+        assert.ok(result.text.includes(`Patch: ${fakePatchPath} (removed)`));
+        assert.equal(
+            result.text.includes("Nothing lands in the main tree until apply_delegation."),
+            false
+        );
+        assert.ok(
+            result.text.includes(
+                "Revision with this delegation ID is no longer possible; delegate again for follow-up work."
+            )
+        );
+        assert.ok(
+            result.text.includes("Worktree removed automatically: the run produced no changes.")
+        );
+        assert.equal(result.delegation.worktreeRemoved, true);
     } finally {
         await rm(directory, { recursive: true, force: true });
     }
@@ -1162,7 +1240,7 @@ test("delegationId revision: loadDelegation used, createWorktree NOT called, agy
     }
 });
 
-test("timeout / agent_failure / cli_failure under isolation: buildPatch still called, removeWorktree never called, outcome name preserved", async () => {
+test("timeout / agent_failure / cli_failure under isolation: buildPatch still called; auto-remove on no changes except timeout", async () => {
     const directory = await tempDirectory();
     const fakeWorktreePath = path.join(directory, "mock-worktree");
     const fakePatchPath = path.join(directory, "mock.patch");
@@ -1218,9 +1296,11 @@ test("timeout / agent_failure / cli_failure under isolation: buildPatch still ca
                         diffstat: ""
                     };
                 },
-                removeWorktree: () => {
+                removeWorktree: async () => {
                     removeWorktreeCalled = true;
-                }
+                    return { ok: true };
+                },
+                sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
             };
 
             const result = await delegateToAntigravity(
@@ -1235,7 +1315,18 @@ test("timeout / agent_failure / cli_failure under isolation: buildPatch still ca
             assert.equal(result.outcome, name);
             assert.equal(result.isError, true);
             assert.equal(buildPatchCalled, true, `buildPatch must be called on ${name}`);
-            assert.equal(removeWorktreeCalled, false, `removeWorktree must NEVER be called on ${name}`);
+            if (name === "timeout") {
+                assert.equal(removeWorktreeCalled, false, "removeWorktree must NOT be called on timeout");
+            } else {
+                assert.equal(removeWorktreeCalled, true, `removeWorktree must be called on ${name} when there are no changes`);
+                assert.equal(result.delegation.worktreeRemoved, true);
+                assert.ok(result.text.includes(`Worktree: ${fakeWorktreePath} (removed)`));
+                assert.ok(
+                    result.text.includes(
+                        "Worktree removed automatically: the run produced no changes."
+                    )
+                );
+            }
             assert.ok(result.delegation);
             assert.equal(result.delegation.delegationId, "123456789a");
             assert.ok(result.text.includes("Isolation: worktree"));
@@ -1401,7 +1492,8 @@ test("applyDelegation: applied / no_changes / apply_conflict / apply_error / inv
         // 3. Applied
         const mockApplied = {
             loadDelegation: loadOk,
-            applyPatch: async () => ({ ok: true, applied: true })
+            applyPatch: async () => ({ ok: true, applied: true }),
+            removeWorktree: async () => ({ ok: true })
         };
         const appRes = await applyDelegation(
             { cwd: directory, delegationId: "abcdef1234" },
@@ -1412,12 +1504,13 @@ test("applyDelegation: applied / no_changes / apply_conflict / apply_error / inv
         assert.ok(appRes.text.includes("abcdef1234"));
         assert.ok(appRes.text.includes("unstaged in the main working tree"));
         assert.ok(appRes.text.includes("Team Lead must diff and re-run tests"));
-        assert.ok(appRes.text.includes("worktree still exists until discard_delegation"));
+        assert.ok(appRes.text.includes("Worktree removed."));
 
         // 4. No changes
         const mockNoChanges = {
             loadDelegation: loadOk,
-            applyPatch: async () => ({ ok: true, applied: false, reason: "no changes" })
+            applyPatch: async () => ({ ok: true, applied: false, reason: "no changes" }),
+            removeWorktree: async () => ({ ok: true })
         };
         const ncRes = await applyDelegation(
             { cwd: directory, delegationId: "abcdef1234" },
@@ -1426,6 +1519,7 @@ test("applyDelegation: applied / no_changes / apply_conflict / apply_error / inv
         assert.equal(ncRes.outcome, "no_changes");
         assert.equal(ncRes.isError, false);
         assert.ok(ncRes.text.includes("no changes to apply"));
+        assert.ok(ncRes.text.includes("Worktree removed."));
 
         // 5. Apply conflict
         const mockConflict = {
@@ -1616,7 +1710,9 @@ test("busy guard: revision on a running id returns validation_failure without sp
             worktreePath: path.join(directory, "wt"),
             patchPath: path.join(directory, "patch")
         }),
-        buildPatch: async () => ({ ok: true, hasChanges: false, diffstat: "" })
+        buildPatch: async () => ({ ok: true, hasChanges: false, diffstat: "" }),
+        removeWorktree: async () => ({ ok: true }),
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
     };
 
     try {
@@ -1700,7 +1796,8 @@ test("busy guard: apply and discard on a running id return validation_failure", 
         removeWorktree: async () => {
             removeWorktreeCalled = true;
             return { ok: true };
-        }
+        },
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
     };
 
     try {
@@ -1737,6 +1834,49 @@ test("busy guard: apply and discard on a running id return validation_failure", 
     }
 });
 
+test("applyDelegation marks delegation busy so stale sweep isBusy skips it", async () => {
+    const directory = await tempDirectory();
+    const delegationId = "aabbccddee";
+    const repoRoot = directory;
+    let releaseApply;
+    const applyWait = new Promise((resolve) => {
+        releaseApply = resolve;
+    });
+
+    const mockWorktree = {
+        loadDelegation: async () => ({
+            ok: true,
+            delegationId,
+            repoRoot,
+            baseCommit: "base",
+            worktreePath: path.join(directory, "wt"),
+            patchPath: path.join(directory, "patch")
+        }),
+        applyPatch: async () => {
+            await applyWait;
+            return { ok: true, applied: true };
+        }
+    };
+
+    const applyPromise = applyDelegation(
+        { cwd: directory, delegationId },
+        { worktree: mockWorktree }
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(
+        busyDelegations.has(makeBusyKey(repoRoot, delegationId)),
+        true,
+        "sweep isBusy must see in-progress apply"
+    );
+
+    releaseApply();
+    await applyPromise;
+    assert.equal(busyDelegations.has(makeBusyKey(repoRoot, delegationId)), false);
+
+    await rm(directory, { recursive: true, force: true });
+});
+
 test("busy guard: guard is released after success, failure, and thrown errors", async () => {
     const directory = await tempDirectory();
     const key = makeBusyKey(directory, "eeff778899");
@@ -1751,6 +1891,8 @@ test("busy guard: guard is released after success, failure, and thrown errors", 
             patchPath: path.join(directory, "patch"),
             mainTreeStatus: "clean"
         }),
+        removeWorktree: async () => ({ ok: true }),
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] }),
         buildPatch: async () => {
             if (buildPatchThrows) {
                 throw new Error("Disk read failure");
@@ -1793,6 +1935,653 @@ test("busy guard: guard is released after success, failure, and thrown errors", 
         assert.equal(busyDelegations.has(key), false);
     } finally {
         busyDelegations.delete(key);
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+const QUOTA_STDOUT = JSON.stringify({
+    conversation_id: "x",
+    status: "ERROR",
+    response: "",
+    error: "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 116h11m21s.",
+    duration_seconds: 0,
+    num_turns: 1
+});
+
+const QUOTA_STDERR = [
+    "error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 116h11m21s.",
+    'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true}'
+].join("\n");
+
+const SUCCESS_ENVELOPE_STDOUT = JSON.stringify({
+    conversation_id: "y",
+    status: "SUCCESS",
+    response: "done",
+    duration_seconds: 1,
+    num_turns: 1
+});
+
+const QUOTA_SPAWN_BEHAVIOR = {
+    code: 3,
+    stdout: `${QUOTA_STDOUT}\n`,
+    stderr: `${QUOTA_STDERR}\n`
+};
+
+function sequentialMockSpawn(behaviors) {
+    const calls = [];
+    let callIndex = 0;
+    const spawnImpl = (bin, args, options) => {
+        calls.push({ bin, args, options });
+        const behavior = behaviors[callIndex] ?? behaviors[behaviors.length - 1];
+        callIndex++;
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.pid = 4242 + callIndex;
+        child.killed = false;
+        child.kill = () => {
+            child.killed = true;
+            queueMicrotask(() => child.emit("close", null));
+        };
+
+        queueMicrotask(() => {
+            if (behavior.error) {
+                child.emit("error", behavior.error);
+                return;
+            }
+            if (behavior.stdout) {
+                child.stdout.emit("data", behavior.stdout);
+            }
+            if (behavior.stderr) {
+                child.stderr.emit("data", behavior.stderr);
+            }
+            if (behavior.hang) {
+                return;
+            }
+            child.emit("close", behavior.code ?? 0);
+        });
+
+        return child;
+    };
+
+    return { spawnImpl, calls };
+}
+
+test("parseAgyErrorLine parses AGY_ERROR JSON and rejects invalid or missing markers", () => {
+    const parsed = parseAgyErrorLine(QUOTA_STDERR);
+    assert.equal(parsed.status, "RESOURCE_EXHAUSTED");
+    assert.equal(parsed.error_code, 429);
+
+    assert.equal(parseAgyErrorLine("plain stderr without marker"), null);
+    const withBadTrailing = [
+        "AGY_ERROR: not-json",
+        'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached.","status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true}'
+    ].join("\n");
+    const recovered = parseAgyErrorLine(withBadTrailing);
+    assert.equal(recovered.status, "RESOURCE_EXHAUSTED");
+    assert.equal(recovered.error_code, 429);
+});
+
+test("classifyAgyFailure detects quota, auth, and non-classified crashes", () => {
+    assert.equal(classifyAgyFailure({ stderr: QUOTA_STDERR }), "quota");
+
+    assert.equal(
+        classifyAgyFailure({
+            payload: {
+                error: "Individual quota reached. Please upgrade your subscription to increase your limits."
+            }
+        }),
+        "quota"
+    );
+
+    assert.equal(
+        classifyAgyFailure({ stderr: "You are not logged into Antigravity." }),
+        "auth"
+    );
+
+    assert.equal(classifyAgyFailure({ stderr: "crash" }), null);
+
+    const misleadingStdout = JSON.stringify({
+        status: "ERROR",
+        response: "Discussing rate limit behavior in the trace output.",
+        num_turns: 429,
+        error: "Agent step failed."
+    });
+    assert.equal(
+        classifyAgyFailure({ stdout: misleadingStdout, payload: JSON.parse(misleadingStdout) }),
+        null
+    );
+
+    const envelope429 = {
+        status: "ERROR",
+        num_turns: 429,
+        error: "step failed"
+    };
+    assert.equal(
+        classifyAgyFailure({
+            stderr: "crash",
+            stdout: JSON.stringify(envelope429),
+            payload: envelope429
+        }),
+        null
+    );
+});
+
+test("agent_failure with quota-like stdout fields does not trigger model fallback", async () => {
+    const directory = await tempDirectory();
+    const stdout = JSON.stringify({
+        status: "ERROR",
+        response: "rate limit mentioned in logs only",
+        num_turns: 429,
+        error: "tool error"
+    });
+    const { spawnImpl, calls } = mockSpawn({ code: 0, stdout });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl, env: { AEO_AGY_FALLBACK_MODELS: "gemini-3.8-flash-high" } }
+        );
+
+        assert.equal(result.outcome, "agent_failure");
+        assert.equal(calls.length, 1);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("runWithModelFallback defaults hardTimeoutMs when omitted", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl } = mockSpawn({ code: 0, stdout: `${SUCCESS_ENVELOPE_STDOUT}\n` });
+
+    try {
+        const result = await runWithModelFallback({
+            prompt: "ok",
+            cwd: directory,
+            model: "m1",
+            bin: "agy",
+            spawnImpl,
+            env: { AEO_AGY_FALLBACK_MODELS: "none" }
+        });
+        assert.equal(result.outcome, "agent_success");
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("resolveFallbackModels and modelEncodesEffort follow env and slug rules", () => {
+    assert.deepEqual(resolveFallbackModels({}), ["gemini-3.8-flash-high"]);
+    assert.deepEqual(resolveFallbackModels({ AEO_AGY_FALLBACK_MODELS: "none" }), []);
+    assert.deepEqual(resolveFallbackModels({ AEO_AGY_FALLBACK_MODELS: "" }), []);
+    assert.deepEqual(
+        resolveFallbackModels({ AEO_AGY_FALLBACK_MODELS: "a-model, b.model ,bad slug!" }),
+        ["a-model", "b.model"]
+    );
+
+    assert.equal(modelEncodesEffort("gemini-3.8-flash-high"), true);
+    assert.equal(modelEncodesEffort("gemini-3.8-flash"), false);
+});
+
+test("quota failure with fallback disabled reports quota_or_auth_failure once", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl, calls } = mockSpawn(QUOTA_SPAWN_BEHAVIOR);
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl, env: { AEO_AGY_FALLBACK_MODELS: "none" } }
+        );
+
+        assert.equal(result.outcome, "quota_or_auth_failure");
+        assert.equal(result.isError, true);
+        assert.match(result.text, /Kind: quota/);
+        assert.match(result.text, /Model: default/);
+        assert.match(result.text, /Resets in 116h11m21s/);
+        assert.equal(result.failureKind, "quota");
+        assert.equal(calls.length, 1);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("auth failure does not trigger model fallback", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl, calls } = mockSpawn({
+        code: 1,
+        stderr: "You are not logged into Antigravity.\n"
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl, env: {} }
+        );
+
+        assert.equal(result.outcome, "quota_or_auth_failure");
+        assert.match(result.text, /Kind: auth/);
+        assert.equal(calls.length, 1);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("quota then success falls back to default flash-high model without effort on retry", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl, calls } = sequentialMockSpawn([
+        QUOTA_SPAWN_BEHAVIOR,
+        { code: 0, stdout: `${SUCCESS_ENVELOPE_STDOUT}\n` }
+    ]);
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory, effort: "medium" },
+            { spawnImpl, env: {} }
+        );
+
+        assert.equal(result.outcome, "agent_success");
+        assert.equal(calls.length, 2);
+
+        const firstArgs = calls[0].args;
+        const effortIdx = firstArgs.indexOf("--effort");
+        assert.equal(firstArgs[effortIdx + 1], "medium");
+        assert.equal(firstArgs.includes("--model"), false);
+
+        const secondArgs = calls[1].args;
+        const modelIdx = secondArgs.indexOf("--model");
+        assert.equal(secondArgs[modelIdx + 1], "gemini-3.8-flash-high");
+        assert.equal(secondArgs.includes("--effort"), false);
+
+        assert.match(
+            result.text,
+            /Model fallback: default -> gemini-3.8-flash-high \(quota exhausted; Resets in 116h11m21s\)/
+        );
+        assert.match(result.text, /effort omitted/);
+        assert.equal(result.modelUsed, "gemini-3.8-flash-high");
+        assert.equal(result.attempts.length, 2);
+
+        const firstPromptIdx = firstArgs.indexOf("-p");
+        const secondPromptIdx = secondArgs.indexOf("-p");
+        assert.equal(firstArgs[firstPromptIdx + 1].includes(FALLBACK_DIRTY_WORKSPACE_NOTE), false);
+        assert.equal(secondArgs[secondPromptIdx + 1].includes(FALLBACK_DIRTY_WORKSPACE_NOTE), true);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("explicit fallback model that already encodes effort does not retry on quota", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl, calls } = mockSpawn(QUOTA_SPAWN_BEHAVIOR);
+
+    try {
+        const result = await delegateToAntigravity(
+            {
+                prompt: "Update the parser.",
+                cwd: directory,
+                model: "gemini-3.8-flash-high"
+            },
+            { spawnImpl, env: {} }
+        );
+
+        assert.equal(result.outcome, "quota_or_auth_failure");
+        assert.equal(calls.length, 1);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("all configured fallback models exhausted reports combined quota message", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl, calls } = sequentialMockSpawn([
+        QUOTA_SPAWN_BEHAVIOR,
+        QUOTA_SPAWN_BEHAVIOR,
+        QUOTA_SPAWN_BEHAVIOR
+    ]);
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            { spawnImpl, env: { AEO_AGY_FALLBACK_MODELS: "m1,m2" } }
+        );
+
+        assert.equal(result.outcome, "quota_or_auth_failure");
+        assert.equal(calls.length, 3);
+        assert.match(result.text, /All configured models hit quota: default, m1, m2\./);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("model fallback skipped when delegation time budget is nearly exhausted", async () => {
+    const directory = await tempDirectory();
+    const { spawnImpl, calls } = mockSpawn(QUOTA_SPAWN_BEHAVIOR);
+    let nowCall = 0;
+    const now = () => {
+        nowCall++;
+        return nowCall === 1 ? 0 : 2 * 60 * 1000;
+    };
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            {
+                spawnImpl,
+                env: {},
+                hardTimeoutMs: 3 * 60 * 1000,
+                now
+            }
+        );
+
+        assert.equal(calls.length, 1);
+        assert.match(result.text, /Model fallback skipped: not enough time left in the delegation budget\./);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("worktree isolation with model fallback on quota still builds patch once", async () => {
+    const directory = await tempDirectory();
+    const fakeWorktreePath = path.join(directory, "mock-worktree");
+    const fakePatchPath = path.join(directory, "mock.patch");
+    const { spawnImpl, calls } = sequentialMockSpawn([
+        QUOTA_SPAWN_BEHAVIOR,
+        { code: 0, stdout: `${SUCCESS_ENVELOPE_STDOUT}\n` }
+    ]);
+
+    let buildPatchCalls = 0;
+    const mockWorktree = {
+        createWorktree: async ({ cwd }) => ({
+            ok: true,
+            delegationId: "123456789a",
+            repoRoot: cwd,
+            baseCommit: "deadbeef00112233445566778899aabbccddeeff",
+            worktreePath: fakeWorktreePath,
+            patchPath: fakePatchPath,
+            mainTreeStatus: "clean"
+        }),
+        buildPatch: async () => {
+            buildPatchCalls++;
+            return {
+                ok: true,
+                hasChanges: true,
+                diffstat: " a | 1 +"
+            };
+        }
+    };
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Fix bug", cwd: directory, isolation: "worktree", effort: "medium" },
+            { spawnImpl, env: {}, worktree: mockWorktree }
+        );
+
+        assert.equal(result.outcome, "agent_success");
+        assert.equal(buildPatchCalls, 1);
+        assert.equal(result.delegation.delegationId, "123456789a");
+        assert.match(result.text, /Model fallback:/);
+        assert.match(result.text, /Isolation: worktree/);
+        assert.equal(calls.length, 2);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("applyDelegation: applied with keepWorktree true does not call removeWorktree", async () => {
+    const directory = await tempDirectory();
+    let removeCalled = false;
+    const loadOk = async () => ({
+        ok: true,
+        delegationId: "abcdef1234",
+        repoRoot: directory,
+        baseCommit: "sha",
+        patchPath: path.join(directory, "p"),
+        worktreePath: path.join(directory, "wt")
+    });
+
+    try {
+        const result = await applyDelegation(
+            { cwd: directory, delegationId: "abcdef1234", keepWorktree: true },
+            {
+                worktree: {
+                    loadDelegation: loadOk,
+                    applyPatch: async () => ({ ok: true, applied: true }),
+                    removeWorktree: async () => {
+                        removeCalled = true;
+                        return { ok: true };
+                    }
+                }
+            }
+        );
+        assert.equal(result.outcome, "applied");
+        assert.equal(removeCalled, false);
+        assert.equal(result.text.includes("Worktree removed."), false);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("applyDelegation: apply_conflict does not call removeWorktree", async () => {
+    const directory = await tempDirectory();
+    let removeCalled = false;
+    const loadOk = async () => ({
+        ok: true,
+        delegationId: "abcdef1234",
+        repoRoot: directory,
+        baseCommit: "sha",
+        patchPath: path.join(directory, "p"),
+        worktreePath: path.join(directory, "wt")
+    });
+
+    try {
+        const result = await applyDelegation(
+            { cwd: directory, delegationId: "abcdef1234" },
+            {
+                worktree: {
+                    loadDelegation: loadOk,
+                    applyPatch: async () => ({
+                        ok: false,
+                        outcome: "apply_conflict",
+                        error: "conflict"
+                    }),
+                    removeWorktree: async () => {
+                        removeCalled = true;
+                        return { ok: true };
+                    }
+                }
+            }
+        );
+        assert.equal(result.outcome, "apply_conflict");
+        assert.equal(removeCalled, false);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("applyDelegation: removal failure keeps applied outcome and reports cleanup failed", async () => {
+    const directory = await tempDirectory();
+    const loadOk = async () => ({
+        ok: true,
+        delegationId: "abcdef1234",
+        repoRoot: directory,
+        baseCommit: "sha",
+        patchPath: path.join(directory, "p"),
+        worktreePath: path.join(directory, "wt")
+    });
+
+    try {
+        const result = await applyDelegation(
+            { cwd: directory, delegationId: "abcdef1234" },
+            {
+                worktree: {
+                    loadDelegation: loadOk,
+                    applyPatch: async () => ({ ok: true, applied: true }),
+                    removeWorktree: async () => ({ ok: false, error: "disk full" })
+                }
+            }
+        );
+        assert.equal(result.outcome, "applied");
+        assert.equal(result.isError, false);
+        assert.ok(result.text.includes("Worktree cleanup failed: disk full; call discard_delegation."));
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("delegateToAntigravity: sweep after createWorktree before agy spawn on new delegation, not on revision", async () => {
+    const directory = await tempDirectory();
+    const fakeWorktreePath = path.join(directory, "wt");
+    const fakePatchPath = path.join(directory, "patch");
+    const delegationId = "9988776655";
+    const envelope = { status: "SUCCESS", response: "Done." };
+    const { spawnImpl, calls } = mockSpawn({ code: 0, stdout: JSON.stringify(envelope) });
+
+    let sweepCalls = 0;
+    let createCalls = 0;
+    let sweepAfterCreate = false;
+    let sweepBeforeAgy = false;
+
+    const mockWorktree = {
+        sweepStaleDelegations: async () => {
+            sweepCalls++;
+            sweepAfterCreate = createCalls === 1;
+            sweepBeforeAgy = calls.length === 0;
+            return { ok: true, removed: ["1111111111", "2222222222"], failed: [] };
+        },
+        createWorktree: async ({ cwd }) => {
+            createCalls++;
+            return {
+                ok: true,
+                delegationId,
+                repoRoot: cwd,
+                baseCommit: "base",
+                worktreePath: fakeWorktreePath,
+                patchPath: fakePatchPath,
+                mainTreeStatus: "clean"
+            };
+        },
+        buildPatch: async () => ({
+            ok: true,
+            hasChanges: true,
+            diffstat: "f | 1 +"
+        }),
+        removeWorktree: async () => ({ ok: true })
+    };
+
+    try {
+        const newRes = await delegateToAntigravity(
+            { prompt: "Task", cwd: directory, isolation: "worktree" },
+            { spawnImpl, worktree: mockWorktree }
+        );
+        assert.equal(sweepCalls, 1);
+        assert.equal(createCalls, 1);
+        assert.equal(sweepAfterCreate, true);
+        assert.equal(sweepBeforeAgy, true);
+        assert.ok(newRes.text.includes("Stale delegations removed: 1111111111, 2222222222"));
+
+        const logLines = [];
+        const failSweepWorktree = {
+            ...mockWorktree,
+            sweepStaleDelegations: async () => ({
+                ok: true,
+                removed: [],
+                failed: [{ id: "deadbeef01", error: "simulated" }]
+            })
+        };
+        const failRes = await delegateToAntigravity(
+            { prompt: "Task2", cwd: directory, isolation: "worktree" },
+            {
+                spawnImpl,
+                worktree: failSweepWorktree,
+                log: (line) => logLines.push(line)
+            }
+        );
+        assert.ok(
+            failRes.text.includes("Stale sweep failures: deadbeef01 (simulated)")
+        );
+        assert.ok(
+            logLines.some((line) =>
+                line.includes("antigravity-mcp: stale sweep failed id=deadbeef01: simulated")
+            )
+        );
+
+        sweepCalls = 0;
+        createCalls = 0;
+        const revisionWorktree = {
+            ...mockWorktree,
+            loadDelegation: async () => ({
+                ok: true,
+                delegationId,
+                repoRoot: directory,
+                baseCommit: "base",
+                worktreePath: fakeWorktreePath,
+                patchPath: fakePatchPath
+            }),
+            createWorktree: async () => {
+                createCalls++;
+                throw new Error("createWorktree must not run on revision");
+            },
+            sweepStaleDelegations: async () => {
+                sweepCalls++;
+                return { ok: true, removed: [], failed: [] };
+            }
+        };
+
+        const revRes = await delegateToAntigravity(
+            {
+                prompt: "Revise",
+                cwd: directory,
+                isolation: "worktree",
+                delegationId
+            },
+            { spawnImpl, worktree: revisionWorktree }
+        );
+        assert.equal(revRes.outcome, "agent_success");
+        assert.equal(sweepCalls, 0);
+        assert.equal(createCalls, 0);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("delegate worktree agent_success with no changes calls removeWorktree and sets worktreeRemoved", async () => {
+    const directory = await tempDirectory();
+    const fakeWorktreePath = path.join(directory, "wt");
+    const fakePatchPath = path.join(directory, "patch");
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: JSON.stringify({ status: "SUCCESS", response: "No edits." })
+    });
+    let removeCalled = false;
+
+    const mockWorktree = {
+        createWorktree: async ({ cwd }) => ({
+            ok: true,
+            delegationId: "aabbccddee",
+            repoRoot: cwd,
+            baseCommit: "base",
+            worktreePath: fakeWorktreePath,
+            patchPath: fakePatchPath,
+            mainTreeStatus: "clean"
+        }),
+        buildPatch: async () => ({ ok: true, hasChanges: false, diffstat: "" }),
+        removeWorktree: async () => {
+            removeCalled = true;
+            return { ok: true };
+        },
+        sweepStaleDelegations: async () => ({ ok: true, removed: [], failed: [] })
+    };
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Look only", cwd: directory, isolation: "worktree" },
+            { spawnImpl, worktree: mockWorktree }
+        );
+        assert.equal(result.outcome, "agent_success");
+        assert.equal(removeCalled, true);
+        assert.equal(result.delegation.worktreeRemoved, true);
+        assert.ok(
+            result.text.includes("Worktree removed automatically: the run produced no changes.")
+        );
+    } finally {
         await rm(directory, { recursive: true, force: true });
     }
 });

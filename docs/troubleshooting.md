@@ -16,7 +16,15 @@ The bridge runs `process.env.AGY_BIN` or `agy`. Install the Antigravity CLI and 
 
 ## Headless authentication failed
 
-`agy -p` uses cached credentials. Sign in once with an interactive `agy` session. A non-interactive run with no cached login exits with an authentication error instead of prompting. That result is a `cli_failure`. It is not an implementation.
+`agy -p` uses cached credentials. Sign in once with an interactive `agy` session. A non-interactive run with no cached login exits with an authentication error instead of prompting. That result is a `quota_or_auth_failure` (Kind: auth), not `cli_failure`. It is not an implementation.
+
+## Quota exhausted for one model
+
+Antigravity quotas are tracked per model family. If the requested model's individual quota is reached (HTTP 429 / `RESOURCE_EXHAUSTED`), the Antigravity CLI exits with a quota error indicating when the quota resets.
+
+The bridge classifies this as `quota_or_auth_failure` (`Kind: quota`) and automatically retries the assignment using the next configured fallback model from `AEO_AGY_FALLBACK_MODELS`. Fallback happens only for quota exhaustion (`Kind: quota`), never for authentication failures (`Kind: auth`). This environment variable defaults to `gemini-3.8-flash-high`. To specify multiple fallback candidates in order of preference, supply a comma-separated list of model slugs; set it to `"none"` or an empty string to disable fallback.
+
+Retries respect the delegation time budget: if less than 2 minutes remain in the bridge hard timeout, fallback is skipped. When fallback occurs, the final delegation report lists each fallback attempt and indicates the model actually used to complete the run.
 
 ## Command permission denied
 
@@ -101,6 +109,12 @@ git worktree prune
 ```
 
 If an unwanted worktree directory is still present on disk, remove it using `discard_delegation` with its `delegationId`, or delete the directory manually and run `git worktree prune`.
+
+## Leftover worktrees fill the disk
+
+Bridge-owned worktrees are full checkouts. They normally live under `AEO_WORKTREE_ROOT` or `<os tmpdir>/aeo-antigravity`. Successful applies and no-change isolated runs remove worktrees automatically; abandoned delegations are swept when older than `AEO_WORKTREE_TTL_HOURS` (default 24 hours; negative or invalid values fall back to 24 with a warning; `0` disables the sweep) on the next new isolated delegation, after that delegation's worktree is created and before its engineer starts. The sweep deletes unapplied patches and worktrees past the TTL — apply or discard promptly, raise `AEO_WORKTREE_TTL_HOURS`, or set `0` if you need longer review windows. Busy tracking is per bridge process; another process sharing `AEO_WORKTREE_ROOT` can still sweep stale delegations.
+
+If disk usage is still high, set a stable `AEO_WORKTREE_ROOT` on a volume with enough space, tune `AEO_WORKTREE_TTL_HOURS`, call `discard_delegation` for known IDs, and run `git worktree prune` in the main repository to drop stale Git worktree registrations.
 
 ## Windows long paths
 

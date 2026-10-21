@@ -4,7 +4,7 @@ This process lets a Team Lead call the Antigravity CLI as an Implementation Engi
 
 The tool is the capability. The policy that decides when the call is mandatory is the Codex orchestration block or the Claude rule installed by [the AEO installer](../../docs/install.md).
 
-The bridge does not approve work, measure cost, or choose a fallback model.
+The bridge does not approve work or measure cost. When a requested model exhausts its quota, the bridge can retry with a fallback model.
 
 ## What the tool does
 
@@ -35,13 +35,14 @@ Stdout of this process is MCP only. Diagnostics, including `antigravity-mcp: std
 
 Parallel delegations must use `isolation: "worktree"` with non-overlapping file scopes so delegations do not touch the main working tree or each other.
 
-- **`apply_delegation`**: takes `cwd` and `delegationId`. Applies the patch of a worktree-isolated delegation to the main working tree as unstaged changes after a `git apply --check`. Applying the same delegation twice returns `apply_conflict`. The Team Lead must review the diff and re-run tests in the main tree after each apply. Apply one delegation at a time.
-- **`discard_delegation`**: takes `cwd` and `delegationId`. Removes the bridge-owned worktree and patch for a delegation. Call after apply or to abandon it. It never touches the main working tree.
+- **`apply_delegation`**: takes `cwd`, `delegationId`, and optional `keepWorktree`. Applies the patch of a worktree-isolated delegation to the main working tree as unstaged changes after a `git apply --check`. Applying the same delegation twice returns `apply_conflict`. On a successful `applied` or `no_changes` result, the bridge removes the delegation worktree automatically unless `keepWorktree: true`. The Team Lead must review the diff and re-run tests in the main tree after each apply. Apply one delegation at a time.
+- **`discard_delegation`**: takes `cwd` and `delegationId`. Explicitly removes the bridge-owned worktree and patch for a delegation (for example after `keepWorktree`, on `apply_conflict`, or to abandon a run). It never touches the main working tree.
 - **Storage**: Worktrees live under `AEO_WORKTREE_ROOT` or `<os tmpdir>/aeo-antigravity`.
+- **Automatic cleanup**: Isolated runs that produce no file changes remove the worktree when the run finishes (except on `timeout` or when the child process exit is unconfirmed after termination, where files may still be changing). Model-quota fallback retries the same worktree; the bridge prepends a note telling the engineer to inspect git status first because a prior model may have partially edited files. Before each new isolated delegation, after its worktree exists and before the engineer starts, the bridge sweeps unapplied delegations older than `AEO_WORKTREE_TTL_HOURS` (default 24 hours; `0` disables the sweep). The sweep deletes stale patches and worktrees (data loss if you still needed them — apply or discard promptly, raise `AEO_WORKTREE_TTL_HOURS`, or set `0`).
 - **Dependencies and verification**: Untracked dependencies like `node_modules` are not present in the worktree so engineer-side test runs may not work there — the authoritative verification happens in the main tree after apply.
 - **Conflicts**: If the main tree moved or overlaps, `apply_delegation` returns `apply_conflict` without changing anything. An `apply_conflict` is not a revision; discard and re-delegate against current HEAD or reconcile manually.
-- **Busy guard**: A worktree delegation is marked busy while its engineer is running; concurrent revisions, applies, or discards for the same delegation ID return `validation_failure` until the run completes.
-- **Manual recovery**: Manual recovery for abandoned worktrees is `git worktree list` and `git worktree prune`.
+- **Busy guard**: A worktree delegation is marked busy while its engineer is running and during `apply_delegation` / `discard_delegation`; concurrent revisions, applies, or discards for the same delegation ID return `validation_failure` until the operation completes. Busy tracking is per bridge process — another process sharing `AEO_WORKTREE_ROOT` could still sweep a delegation past the TTL; use a longer TTL or `0` when delegations are reviewed for days.
+- **Manual recovery**: Manual recovery for abandoned worktrees is `git worktree list` and `git worktree prune`, or set `AEO_WORKTREE_TTL_HOURS` and let the bridge sweep on the next delegation.
 
 ## Results
 
@@ -49,6 +50,7 @@ Parallel delegations must use `isolation: "worktree"` with non-overlapping file 
 | --- | --- |
 | `agent_success` | The CLI exited 0 with status `SUCCESS` and a response. Evidence, not approval. |
 | `agent_failure` | The CLI exited 0 and the agent status was not a usable success. |
+| `quota_or_auth_failure` | The CLI reported quota exhaustion or an authentication failure. Quota failures trigger fallback when configured. |
 | `cli_failure` | The process did not complete a run. Includes a missing `agy`, a non-zero exit, or invalid JSON. |
 | `timeout` | The 16-minute bridge limit stopped the process. |
 | `validation_failure` | The arguments were rejected before starting. |
@@ -108,6 +110,30 @@ export AEO_AGY_TIMEOUT_MINUTES=15
 ```
 
 `AEO_AGY_TIMEOUT_MINUTES` must be an integer. It defaults to 15 minutes and is clamped to 1..18 minutes. The CLI print timeout is set to $N$ minutes (`${N}m`) and the bridge hard timeout is set to $N+1$ minutes. The 18-minute cap guarantees the hard timeout (19 minutes) finishes before the Codex client timeout (`tool_timeout_sec = 1200`, 20 minutes) can abort the MCP call. Invalid values fall back to 15 with a warning on stderr.
+
+Set `AEO_AGY_FALLBACK_MODELS` to configure fallback models when model quota is exhausted:
+
+```bash
+# Windows
+set AEO_AGY_FALLBACK_MODELS=gemini-3.8-flash-high
+
+# macOS or Linux
+export AEO_AGY_FALLBACK_MODELS=gemini-3.8-flash-high
+```
+
+`AEO_AGY_FALLBACK_MODELS` accepts a comma-separated list of model slugs. It defaults to `gemini-3.8-flash-high`. Set it to an empty string or the word `"none"` to disable model fallback. Fallback occurs only for quota exhaustion (`Kind: quota`), never for authentication failures (`Kind: auth`). When fallback occurs, the delegation report names each fallback attempt (`Model fallback: <from> -> <to> (quota exhausted...)`) and identifies the model actually used (`modelUsed` on the result object, `Model: <slug>` line, and `Execution metadata:` model field). When a fallback slug encodes its own effort suffix (`-low`, `-medium`, `-high`, `-xhigh`, `-max`), the retry omits `--effort`, because agy rejects a conflicting pair.
+
+Set `AEO_WORKTREE_TTL_HOURS` to control automatic removal of stale bridge worktrees:
+
+```bash
+# Windows
+set AEO_WORKTREE_TTL_HOURS=24
+
+# macOS or Linux
+export AEO_WORKTREE_TTL_HOURS=24
+```
+
+`AEO_WORKTREE_TTL_HOURS` must be a non-negative integer hour count. It defaults to 24. Set it to `0` to disable the stale sweep. Invalid or negative values fall back to 24 with a one-time warning on stderr. The sweep runs best-effort when a new isolated delegation is created (after its worktree exists, before the engineer starts; not on revisions) and deletes unapplied patches and worktrees older than the TTL that are not busy in this process.
 
 ## Codex registration
 
