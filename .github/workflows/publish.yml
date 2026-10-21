@@ -20,7 +20,8 @@
 # 3. Trusted Publishing publishes the new version automatically.
 #    npm generates provenance for a public package from this public repository.
 #
-# Trusted publishing needs npm CLI >= 11.5.1 and Node.js >= 22.14.0.
+# Trusted publishing needs npm CLI >= 11.5.1 and Node.js >= 22.14.0; the workflow pins a newer 11.x
+# because older releases report a rejected OIDC exchange only as ENEEDAUTH.
 # An existing version succeeds only when dist.integrity and dist.shasum both match
 # the tarball packed from this tag. Different bytes under the same version fail.
 
@@ -64,7 +65,7 @@ jobs:
           EOF
 
       - name: Install an npm release that supports trusted publishing
-        run: npm install -g npm@11.5.1
+        run: npm install -g npm@11.21.1
 
       - name: Install root dependencies
         run: npm ci
@@ -86,4 +87,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           PACK_DESTINATION: ${{ runner.temp }}/aeo-npm-pack
+          # Verbose npm logging shows the OIDC token exchange, so a rejected
+          # Trusted Publisher match reads as more than a bare ENEEDAUTH.
+          NPM_CONFIG_LOGLEVEL: verbose
         run: node scripts/publish-packed-release.mjs
