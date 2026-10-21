@@ -111,6 +111,8 @@ export AEO_AGY_TIMEOUT_MINUTES=15
 
 `AEO_AGY_TIMEOUT_MINUTES` must be an integer. It defaults to 15 minutes and is clamped to 1..18 minutes. The CLI print timeout is set to $N$ minutes (`${N}m`) and the bridge hard timeout is set to $N+1$ minutes. The 18-minute cap guarantees the hard timeout (19 minutes) finishes before the Codex client timeout (`tool_timeout_sec = 1200`, 20 minutes) can abort the MCP call. Invalid values fall back to 15 with a warning on stderr.
 
+Set `AEO_MAX_REPORT_CHARS` to cap how much of the engineer completion report is returned inline to the Team Lead (default 32000 characters). The same limit applies to the `CLI diagnostics` and `Raw stdout` blocks in tool results (their default cap was lowered from 120000 to 32000). Values below 4000 are raised to 4000; values above 200000 are lowered to 200000. Invalid non-integer values fall back to 32000 with a warning on stderr. The full untruncated report is always written to `<AEO_WORKTREE_ROOT>/runs/<run-id>/report.md`, or `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when `AEO_WORKTREE_ROOT` is unset or relative/blank (relative paths are ignored and fall back to the OS tmpdir path); the tool result includes that path. The runs directory is not cleaned up automatically.
+
 Set `AEO_AGY_FALLBACK_MODELS` to configure fallback models when model quota is exhausted:
 
 ```bash

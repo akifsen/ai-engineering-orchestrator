@@ -1,14 +1,28 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { after, test } from "node:test";
+
+const sharedWorktreeRoot = mkdtempSync(path.join(tmpdir(), "aeo-test-worktree-"));
+process.env.AEO_WORKTREE_ROOT = sharedWorktreeRoot;
+
+after(() => {
+    try {
+        rmSync(sharedWorktreeRoot, { recursive: true, force: true });
+    } catch {
+        // ignore
+    }
+});
 import assert from "node:assert/strict";
 
 import {
     CLI_TIMEOUT,
     HARD_TIMEOUT_MS,
     MAX_COMMAND_CHARS,
+    MAX_REPORT_CHARS,
+    MIN_REPORT_CHARS,
     TERMINATE_GRACE_MS,
     applyDelegation,
     buildAgyArgs,
@@ -30,6 +44,7 @@ import {
     modelEncodesEffort,
     parseAgyErrorLine,
     resolveFallbackModels,
+    resolveMaxReportChars,
     runWithModelFallback,
     truncate
 } from "../lib/delegate.js";
@@ -423,6 +438,171 @@ test("truncates pathological report text", () => {
     const text = truncate("x".repeat(50), 10);
     assert.match(text, /\[Output truncated by the Antigravity MCP bridge\]/);
     assert.ok(text.startsWith("xxxxxxxxxx"));
+});
+
+test("resolveMaxReportChars resolves default, valid, invalid, and clamped values", () => {
+    const def = resolveMaxReportChars({});
+    assert.equal(def.limit, MAX_REPORT_CHARS);
+    assert.equal(def.warning, null);
+
+    const empty = resolveMaxReportChars({ AEO_MAX_REPORT_CHARS: "   " });
+    assert.equal(empty.limit, MAX_REPORT_CHARS);
+    assert.equal(empty.warning, null);
+
+    const valid = resolveMaxReportChars({ AEO_MAX_REPORT_CHARS: "50000" });
+    assert.equal(valid.limit, 50_000);
+    assert.equal(valid.warning, null);
+
+    const clampedLow = resolveMaxReportChars({ AEO_MAX_REPORT_CHARS: "10" });
+    assert.equal(clampedLow.limit, MIN_REPORT_CHARS);
+    assert.equal(clampedLow.warning, null);
+
+    const clampedHigh = resolveMaxReportChars({ AEO_MAX_REPORT_CHARS: "999999" });
+    assert.equal(clampedHigh.limit, 200_000);
+    assert.equal(clampedHigh.warning, null);
+
+    const invalid = resolveMaxReportChars({ AEO_MAX_REPORT_CHARS: "abc" });
+    assert.equal(invalid.limit, MAX_REPORT_CHARS);
+    assert.match(invalid.warning, /Invalid AEO_MAX_REPORT_CHARS/);
+});
+
+test("agent_success persists full report and truncates inline when over the cap", async () => {
+    const directory = await tempDirectory();
+    const reportRoot = await tempDirectory();
+    const fullBody = `BODY-${"z".repeat(500)}`;
+    const envelope = {
+        conversation_id: "conv-report-file",
+        status: "SUCCESS",
+        response: fullBody,
+        duration_seconds: 1,
+        num_turns: 1
+    };
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: `${JSON.stringify(envelope)}\n`
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            {
+                spawnImpl,
+                maxReportChars: 80,
+                env: {
+                    AEO_WORKTREE_ROOT: reportRoot,
+                    AEO_AGY_FALLBACK_MODELS: "none"
+                },
+                randomBytesImpl: () => Buffer.from("abcd1234", "hex")
+            }
+        );
+
+        assert.equal(result.outcome, "agent_success");
+        assert.match(result.text, /Full report:/);
+        assert.match(
+            result.text,
+            /Inline report truncated to 80 characters; read the file for the rest\./
+        );
+        assert.match(result.text, /\[Output truncated by the Antigravity MCP bridge\]/);
+        assert.equal(result.text.includes(fullBody), false);
+
+        const reportPath = path.join(reportRoot, "runs");
+        const runDirs = await readdir(reportPath);
+        assert.equal(runDirs.length, 1);
+        const saved = await readFile(path.join(reportPath, runDirs[0], "report.md"), "utf8");
+        assert.equal(saved, fullBody);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+        await rm(reportRoot, { recursive: true, force: true });
+    }
+});
+
+test("agent_success warns when report save fails and inline was truncated", async () => {
+    const directory = await tempDirectory();
+    const fullBody = `BODY-${"z".repeat(500)}`;
+    const envelope = {
+        status: "SUCCESS",
+        response: fullBody
+    };
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: `${JSON.stringify(envelope)}\n`
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            {
+                spawnImpl,
+                maxReportChars: 80,
+                writeFileImpl: async () => {
+                    throw new Error("disk full");
+                },
+                env: {
+                    AEO_WORKTREE_ROOT: sharedWorktreeRoot,
+                    AEO_AGY_FALLBACK_MODELS: "none"
+                }
+            }
+        );
+
+        assert.equal(result.outcome, "agent_success");
+        assert.match(result.text, /Full report could not be saved: disk full/);
+        assert.match(
+            result.text,
+            /Inline report truncated to 80 characters; the full report could not be saved, so the rest is lost\./
+        );
+        assert.equal(
+            result.text.includes("read the file for the rest"),
+            false
+        );
+        assert.match(result.text, /\[Output truncated by the Antigravity MCP bridge\]/);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("agent_success under the cap still writes the report file without a truncation note", async () => {
+    const directory = await tempDirectory();
+    const reportRoot = await tempDirectory();
+    const fullBody = "Short completion report.";
+    const envelope = {
+        status: "SUCCESS",
+        response: fullBody
+    };
+    const { spawnImpl } = mockSpawn({
+        code: 0,
+        stdout: `${JSON.stringify(envelope)}\n`
+    });
+
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Update the parser.", cwd: directory },
+            {
+                spawnImpl,
+                env: {
+                    AEO_WORKTREE_ROOT: reportRoot,
+                    AEO_AGY_FALLBACK_MODELS: "none"
+                },
+                randomBytesImpl: () => Buffer.from("abcd1234", "hex")
+            }
+        );
+
+        assert.equal(result.outcome, "agent_success");
+        assert.match(result.text, /Full report:/);
+        assert.equal(
+            result.text.includes("Inline report truncated to"),
+            false
+        );
+        assert.ok(result.text.includes(fullBody));
+
+        const reportPath = path.join(reportRoot, "runs");
+        const runDirs = await readdir(reportPath);
+        assert.equal(runDirs.length, 1);
+        const saved = await readFile(path.join(reportPath, runDirs[0], "report.md"), "utf8");
+        assert.equal(saved, fullBody);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+        await rm(reportRoot, { recursive: true, force: true });
+    }
 });
 
 test("bridge hard timeout terminates a hung process", async () => {
@@ -2080,7 +2260,7 @@ test("agent_failure with quota-like stdout fields does not trigger model fallbac
     try {
         const result = await delegateToAntigravity(
             { prompt: "Update the parser.", cwd: directory },
-            { spawnImpl, env: { AEO_AGY_FALLBACK_MODELS: "gemini-3.8-flash-high" } }
+            { spawnImpl, env: { AEO_WORKTREE_ROOT: sharedWorktreeRoot, AEO_AGY_FALLBACK_MODELS: "gemini-3.8-flash-high" } }
         );
 
         assert.equal(result.outcome, "agent_failure");
@@ -2101,7 +2281,7 @@ test("runWithModelFallback defaults hardTimeoutMs when omitted", async () => {
             model: "m1",
             bin: "agy",
             spawnImpl,
-            env: { AEO_AGY_FALLBACK_MODELS: "none" }
+            env: { AEO_WORKTREE_ROOT: sharedWorktreeRoot, AEO_AGY_FALLBACK_MODELS: "none" }
         });
         assert.equal(result.outcome, "agent_success");
     } finally {
@@ -2175,7 +2355,7 @@ test("quota then success falls back to default flash-high model without effort o
     try {
         const result = await delegateToAntigravity(
             { prompt: "Update the parser.", cwd: directory, effort: "medium" },
-            { spawnImpl, env: {} }
+            { spawnImpl, env: { AEO_WORKTREE_ROOT: sharedWorktreeRoot } }
         );
 
         assert.equal(result.outcome, "agent_success");
@@ -2311,7 +2491,7 @@ test("worktree isolation with model fallback on quota still builds patch once", 
     try {
         const result = await delegateToAntigravity(
             { prompt: "Fix bug", cwd: directory, isolation: "worktree", effort: "medium" },
-            { spawnImpl, env: {}, worktree: mockWorktree }
+            { spawnImpl, env: { AEO_WORKTREE_ROOT: sharedWorktreeRoot }, worktree: mockWorktree }
         );
 
         assert.equal(result.outcome, "agent_success");
@@ -2585,4 +2765,3 @@ test("delegate worktree agent_success with no changes calls removeWorktree and s
         await rm(directory, { recursive: true, force: true });
     }
 });
-

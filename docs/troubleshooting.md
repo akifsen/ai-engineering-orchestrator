@@ -40,6 +40,10 @@ Partial edits may already exist on disk when the timeout elapses. Compare `git s
 
 The timeout can be configured via the `AEO_AGY_TIMEOUT_MINUTES` environment variable (integer, default 15). The value is clamped to a range of 1..18 minutes. The upper limit of 18 minutes ensures that the bridge's hard timeout (N+1 minutes, up to 19 minutes) always elapses before the Codex client tool timeout (`tool_timeout_sec = 1200`, i.e. 20 minutes) can cancel the bridge.
 
+## Engineer report too large for the Team Lead context
+
+Long implementation completion reports can overwhelm the Team Lead's MCP context. The bridge caps inline report text with `AEO_MAX_REPORT_CHARS` (default 32000; clamped 4000..200000). The same cap applies to the `CLI diagnostics` and `Raw stdout` blocks in tool results (their default cap was lowered from 120000 to 32000). The bridge writes the full untruncated report to `<AEO_WORKTREE_ROOT>/runs/<run-id>/report.md`, or `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when `AEO_WORKTREE_ROOT` is unset or relative/blank (relative paths are ignored and fall back to the OS tmpdir path). Successful delegations include a `Full report:` line with that absolute path; when truncation applies, the tool text says so and points you to the file. This runs directory is not removed automatically — delete old reports manually if disk space matters.
+
 ## Read or write permission denied
 
 `cwd` must be an absolute directory. The Antigravity example sets `allowNonWorkspaceAccess` to false and trusts `C:\path\to\development` only as a placeholder. Replace that path with the real development directory. Files outside the trusted workspace stay blocked on purpose.

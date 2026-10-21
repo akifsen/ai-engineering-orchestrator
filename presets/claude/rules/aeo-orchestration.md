@@ -219,6 +219,18 @@ At minimum, compare against the baseline, read `git status` and the diff, check 
 
 If a test was not executed, it did not pass.
 
+## Context hygiene
+
+When a task reaches its final APPROVED or CHANGES REQUIRED decision and the next request does not build on it, start from a clean context (`/clear`). Never clear or compact in the middle of a task: the baseline, the contract, and open findings are lost.
+
+If context is compacted anyway, the summary must keep five items: the baseline `git status --short`, the active contract, each delegation ID and outcome, open review findings, and the latest decision. Restate those five items briefly in your own reply at each delegation boundary (before delegating, after reviewing) so compaction preserves them.
+
+The bridge returns a capped inline report and a "Full report:" file path. Read the file only when the inline report is insufficient for the decision, and read only needed parts rather than the whole file. The diff and the tests remain the evidence; the report is not.
+
+Do not paste full test output into the context. Run the narrowest relevant test command, and prefer a quiet reporter or a filter that keeps failures only. The optional example hook in `docs/context-hygiene.md` automates that for Bash tool output.
+
+Contracts stay small (the bridge limit is 24000 characters). Do not paste repository files into a contract.
+
 ## aeo-reviewer
 
 Use aeo-reviewer for an independent challenge on non-trivial, security-sensitive, concurrent, persistent, or high-blast-radius work. Skip it when it would not change your decision.

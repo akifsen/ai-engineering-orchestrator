@@ -243,6 +243,7 @@ Bridge MCP servers read these from the environment of the process that starts th
 | --- | --- |
 | `AGY_BIN` | Path to the Antigravity CLI when `agy` is not on `PATH`. |
 | `AEO_AGY_TIMEOUT_MINUTES` | Antigravity delegation timeout in minutes (default 15; clamped 1..18). |
+| `AEO_MAX_REPORT_CHARS` | Max inline engineer report characters in MCP tool results (default 32000; clamped 4000..200000). Full report is also saved under `<worktree root>/runs/<id>/report.md`. Both bridges honor it. |
 | `AEO_AGY_FALLBACK_MODELS` | Comma-separated Gemini slugs to try on quota exhaustion (default `gemini-3.8-flash-high`; `none` disables). |
 | `AEO_WORKTREE_ROOT` | Directory for bridge-owned worktrees (default under the OS temp directory). |
 | `AEO_WORKTREE_TTL_HOURS` | Hours before unapplied delegations are swept on a new isolated delegation (default 24; `0` disables). |

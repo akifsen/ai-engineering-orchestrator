@@ -105,6 +105,7 @@ Run a one-line delegation in a temp git repo and confirm the outcome (see projec
 | `CURSOR_AGENT_BIN` | Override executable or `index.js` path. |
 | `AEO_CURSOR_MODEL` | Default model slug (default `composer-2.5`). |
 | `AEO_CURSOR_TIMEOUT_MINUTES` | Default timeout minutes, 1..120 (default 30). |
+| `AEO_MAX_REPORT_CHARS` | Max inline engineer report characters in MCP tool results (default 32000; clamped 4000..200000). Full report is written to `<AEO_WORKTREE_ROOT>/runs/<run-id>/report.md`, or `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when unset; runs are not auto-cleaned. |
 | `AEO_WORKTREE_TTL_HOURS` | Stale worktree sweep TTL in hours (default 24; `0` disables). Invalid or negative values fall back to 24 with a one-time stderr warning. |
 
 Set `AEO_WORKTREE_TTL_HOURS` to control automatic removal of stale bridge worktrees:

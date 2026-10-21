@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import crypto from "node:crypto";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -11,6 +12,7 @@ import {
     normalizeRepoRoot,
     removeWorktree,
     resolveRepoRoot,
+    resolveWorktreeRoot,
     resolveWorktreeTtlMs,
     sweepStaleDelegations,
     touchDelegation
@@ -23,7 +25,9 @@ export const CLI_TIMEOUT = "15m";
 export const HARD_TIMEOUT_MS = 16 * 60 * 1000;
 export const TERMINATE_GRACE_MS = 10_000;
 export const MAX_PROMPT_CHARS = 24_000;
-export const MAX_REPORT_CHARS = 120_000;
+export const MIN_REPORT_CHARS = 4_000;
+export const MAX_REPORT_CHARS_LIMIT = 200_000;
+export const MAX_REPORT_CHARS = 32_000;
 export const MAX_COLLECT_CHARS = 8_000_000;
 export const MAX_COMMAND_CHARS = 30_000;
 
@@ -210,13 +214,103 @@ if (startupTimeouts.warning) {
     console.error(startupTimeouts.warning);
 }
 
+export function resolveMaxReportChars(env = process.env) {
+    const raw = env?.AEO_MAX_REPORT_CHARS;
+    if (raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "")) {
+        return {
+            limit: MAX_REPORT_CHARS,
+            warning: null
+        };
+    }
+
+    const trimmed = typeof raw === "string" ? raw.trim() : String(raw);
+    if (!/^-?\d+$/.test(trimmed)) {
+        return {
+            limit: MAX_REPORT_CHARS,
+            warning: `Invalid AEO_MAX_REPORT_CHARS "${raw}". Falling back to ${MAX_REPORT_CHARS} characters.`
+        };
+    }
+
+    const parsed = Number.parseInt(trimmed, 10);
+    const clamped = Math.max(MIN_REPORT_CHARS, Math.min(MAX_REPORT_CHARS_LIMIT, parsed));
+
+    return {
+        limit: clamped,
+        warning: null
+    };
+}
+
+const startupReportChars = resolveMaxReportChars(process.env);
+if (startupReportChars.warning) {
+    console.error(startupReportChars.warning);
+}
+
 let firstUseWarned = false;
+let firstMaxReportWarned = false;
 
 function warnInvalidTimeout(warning) {
     if (warning && !firstUseWarned) {
         firstUseWarned = true;
         console.error(warning);
     }
+}
+
+function warnInvalidMaxReportChars(warning) {
+    if (warning && !firstMaxReportWarned) {
+        firstMaxReportWarned = true;
+        console.error(warning);
+    }
+}
+
+export function newReportRunId(randomBytesImpl = crypto.randomBytes) {
+    const iso = new Date().toISOString().replace(/[:.]/g, "-");
+    const suffix = randomBytesImpl(4).toString("hex");
+    return `${iso}-${suffix}`;
+}
+
+export async function persistEngineerReport({
+    response,
+    env = process.env,
+    mkdirImpl = mkdir,
+    writeFileImpl = writeFile,
+    randomBytesImpl = crypto.randomBytes,
+    resolveWorktreeRootImpl = resolveWorktreeRoot
+} = {}) {
+    try {
+        const reportRoot = resolveWorktreeRootImpl(env);
+        const runId = newReportRunId(randomBytesImpl);
+        const reportPath = path.join(reportRoot, "runs", runId, "report.md");
+
+        await mkdirImpl(path.dirname(reportPath), { recursive: true });
+        await writeFileImpl(reportPath, response, "utf8");
+        return { ok: true, path: path.resolve(reportPath) };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+        };
+    }
+}
+
+function buildFullReportToolLines(saveResult, truncated, maxReportChars) {
+    const lines = [];
+    if (saveResult.ok) {
+        lines.push(`Full report: ${saveResult.path}`);
+    } else {
+        lines.push(`Full report could not be saved: ${saveResult.error}`);
+    }
+    if (truncated) {
+        if (saveResult.ok) {
+            lines.push(
+                `Inline report truncated to ${maxReportChars} characters; read the file for the rest.`
+            );
+        } else {
+            lines.push(
+                `Inline report truncated to ${maxReportChars} characters; the full report could not be saved, so the rest is lost.`
+            );
+        }
+    }
+    return lines;
 }
 
 export function resolveAgyBin(env = process.env) {
@@ -455,12 +549,12 @@ function outcome({
     };
 }
 
-function diagnosticBlock(title, body) {
+function diagnosticBlock(title, body, maxReportChars = MAX_REPORT_CHARS) {
     if (!body) {
         return "";
     }
 
-    return `\n\n---\n${title}:\n${truncate(body)}`;
+    return `\n\n---\n${title}:\n${truncate(body, maxReportChars)}`;
 }
 
 export function parseAgyErrorLine(stderr) {
@@ -650,6 +744,12 @@ export function runAntigravity({
     hardTimeoutMs = HARD_TIMEOUT_MS,
     terminateGraceMs = TERMINATE_GRACE_MS,
     maxCollectChars = MAX_COLLECT_CHARS,
+    maxReportChars = startupReportChars.limit,
+    env = process.env,
+    mkdirImpl = mkdir,
+    writeFileImpl = writeFile,
+    randomBytesImpl = crypto.randomBytes,
+    resolveWorktreeRootImpl = resolveWorktreeRoot,
     spawnImpl = spawn,
     terminateProcess = defaultTerminateProcess,
     log = () => {}
@@ -744,7 +844,7 @@ export function runAntigravity({
                     `The CLI print timeout for this run was ${cliTimeout}.`,
                     "The process was terminated. Treat the implementation as not completed.",
                     unconfirmedLine,
-                    diagnosticBlock("CLI diagnostics", stderr).trim()
+                    diagnosticBlock("CLI diagnostics", stderr, maxReportChars).trim()
                 ].filter(Boolean).join("\n")
             });
             if (!confirmedExit) {
@@ -775,7 +875,7 @@ export function runAntigravity({
                     "Antigravity produced more output than the bridge will collect.",
                     "The process was terminated. Treat the implementation as not completed.",
                     unconfirmedLine,
-                    diagnosticBlock("Partial CLI diagnostics", stderr).trim()
+                    diagnosticBlock("Partial CLI diagnostics", stderr, maxReportChars).trim()
                 ].filter(Boolean));
                 if (!confirmedExit) {
                     overflowOutcome.exitUnconfirmed = true;
@@ -806,188 +906,224 @@ export function runAntigravity({
                 missing
                     ? "Install the Antigravity CLI or set AGY_BIN to the agy executable."
                     : errorText(error),
-                diagnosticBlock("CLI diagnostics", stderr).trim()
+                diagnosticBlock("CLI diagnostics", stderr, maxReportChars).trim()
             ].filter(Boolean)));
         });
 
-        child.on("close", (code) => {
+        child.on("close", async (code) => {
             if (overflow || timedOut) {
                 return;
             }
 
-            const parsed = parseAgentEnvelope(stdout);
-            const diagnostics = stderr.trim();
-            const payloadCandidate = parsed.ok ? parsed.value : null;
+            try {
+                const parsed = parseAgentEnvelope(stdout);
+                const diagnostics = stderr.trim();
+                const payloadCandidate = parsed.ok ? parsed.value : null;
 
-            const isFailure = code !== 0 || (code === 0 && (!parsed.ok || payloadCandidate?.status !== "SUCCESS"));
-            if (isFailure) {
-                const failureKind = classifyAgyFailure({ stderr, stdout, payload: payloadCandidate });
-                if (failureKind === "quota" || failureKind === "auth") {
-                    const cliErrorMessage = extractCliErrorMessage({ payload: payloadCandidate, stderr, stdout });
-                    const resetHint = extractResetHint(payloadCandidate?.error) || extractResetHint(stderr) || extractResetHint(stdout);
+                const isFailure = code !== 0 || (code === 0 && (!parsed.ok || payloadCandidate?.status !== "SUCCESS"));
+                if (isFailure) {
+                    const failureKind = classifyAgyFailure({ stderr, stdout, payload: payloadCandidate });
+                    if (failureKind === "quota" || failureKind === "auth") {
+                        const cliErrorMessage = extractCliErrorMessage({ payload: payloadCandidate, stderr, stdout });
+                        const resetHint = extractResetHint(payloadCandidate?.error) || extractResetHint(stderr) || extractResetHint(stdout);
 
-                    const textParts = [
-                        "Outcome: quota_or_auth_failure",
-                        `Kind: ${failureKind}`,
-                        `Model: ${model ?? "default"}`
-                    ];
+                        const textParts = [
+                            "Outcome: quota_or_auth_failure",
+                            `Kind: ${failureKind}`,
+                            `Model: ${model ?? "default"}`
+                        ];
 
-                    if (cliErrorMessage) {
-                        textParts.push(cliErrorMessage);
-                    }
-
-                    if (resetHint) {
-                        textParts.push(resetHint.endsWith(".") ? resetHint : `${resetHint}.`);
-                    }
-
-                    if (diagnostics) {
-                        textParts.push(diagnosticBlock("CLI diagnostics", diagnostics).trim());
-                    }
-
-                    if (payloadCandidate) {
-                        textParts.push("");
-                        textParts.push("Execution metadata:");
-                        textParts.push(formatMetadata(payloadCandidate, model));
-                    }
-
-                    const failureOutcome = outcome({
-                        outcomeName: "quota_or_auth_failure",
-                        isError: true,
-                        text: textParts.filter(Boolean).join("\n")
-                    });
-                    failureOutcome.failureKind = failureKind;
-                    failureOutcome.resetHint = resetHint;
-                    failureOutcome.modelUsed = model ?? null;
-                    failureOutcome.attempts = [
-                        {
-                            model: model ?? null,
-                            outcome: "quota_or_auth_failure",
-                            failureKind
+                        if (cliErrorMessage) {
+                            textParts.push(cliErrorMessage);
                         }
-                    ];
 
-                    finish(failureOutcome);
+                        if (resetHint) {
+                            textParts.push(resetHint.endsWith(".") ? resetHint : `${resetHint}.`);
+                        }
+
+                        if (diagnostics) {
+                            textParts.push(diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim());
+                        }
+
+                        if (payloadCandidate) {
+                            textParts.push("");
+                            textParts.push("Execution metadata:");
+                            textParts.push(formatMetadata(payloadCandidate, model));
+                        }
+
+                        const failureOutcome = outcome({
+                            outcomeName: "quota_or_auth_failure",
+                            isError: true,
+                            text: textParts.filter(Boolean).join("\n")
+                        });
+                        failureOutcome.failureKind = failureKind;
+                        failureOutcome.resetHint = resetHint;
+                        failureOutcome.modelUsed = model ?? null;
+                        failureOutcome.attempts = [
+                            {
+                                model: model ?? null,
+                                outcome: "quota_or_auth_failure",
+                                failureKind
+                            }
+                        ];
+
+                        finish(failureOutcome);
+                        return;
+                    }
+                }
+
+                if (code !== 0) {
+                    finish(cliFailure([
+                        `Antigravity exited with code ${code}.`,
+                        "This is a CLI or invocation failure, not a completed implementation.",
+                        parsed.ok && parsed.value.status
+                            ? `Status: ${parsed.value.status}`
+                            : "",
+                        parsed.ok && parsed.value.error
+                            ? `Error: ${truncate(String(parsed.value.error), 4_000)}`
+                            : "",
+                        !parsed.ok
+                            ? `Output parse: ${parsed.error}`
+                            : "",
+                        diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
+                        !parsed.ok && stdout.trim()
+                            ? diagnosticBlock("Raw stdout", stdout, maxReportChars).trim()
+                            : ""
+                    ].filter(Boolean)));
                     return;
                 }
-            }
 
-            if (code !== 0) {
-                finish(cliFailure([
-                    `Antigravity exited with code ${code}.`,
-                    "This is a CLI or invocation failure, not a completed implementation.",
-                    parsed.ok && parsed.value.status
-                        ? `Status: ${parsed.value.status}`
-                        : "",
-                    parsed.ok && parsed.value.error
-                        ? `Error: ${truncate(String(parsed.value.error), 4_000)}`
-                        : "",
-                    !parsed.ok
-                        ? `Output parse: ${parsed.error}`
-                        : "",
-                    diagnosticBlock("CLI diagnostics", diagnostics).trim(),
-                    !parsed.ok && stdout.trim()
-                        ? diagnosticBlock("Raw stdout", stdout).trim()
-                        : ""
-                ].filter(Boolean)));
-                return;
-            }
-
-            if (!parsed.ok) {
-                finish(cliFailure([
-                    "Antigravity exited 0 but did not return a JSON object.",
-                    parsed.error,
-                    diagnosticBlock("CLI diagnostics", diagnostics).trim(),
-                    diagnosticBlock("Raw stdout", stdout).trim()
-                ].filter(Boolean)));
-                return;
-            }
-
-            const payload = parsed.value;
-            if (payload.status !== "SUCCESS") {
-                finish(outcome({
-                    outcomeName: "agent_failure",
-                    isError: true,
-                    text: [
-                        "Outcome: agent_failure",
-                        "The Antigravity CLI exited 0 and returned structured output, so the process started.",
-                        "The agent run itself did not succeed. This is not a successful implementation.",
-                        `Status: ${payload.status ?? "missing"}`,
-                        payload.error
-                            ? `Error: ${truncate(String(payload.error), 4_000)}`
-                            : "",
-                        diagnosticBlock("CLI diagnostics", diagnostics).trim(),
-                        "",
-                        "Execution metadata:",
-                        formatMetadata(payload, model)
-                    ].filter(Boolean).join("\n")
-                }));
-                return;
-            }
-
-            const response = typeof payload.response === "string"
-                ? payload.response.trim()
-                : "";
-
-            if (!response) {
-                let advice = "";
-                if (
-                    diagnostics.includes('required the "command" permission') ||
-                    diagnostics.includes("soft-deny") ||
-                    diagnostics.includes("soft-denied")
-                ) {
-                    advice = [
-                        "",
-                        "Likely cause:",
-                        "A shell command was denied by the Antigravity permission policy.",
-                        "",
-                        "Next step:",
-                        "Tell the engineer exactly which commands it may run, or add a narrow allow rule in ~/.gemini/antigravity-cli/settings.json (docs/permissions.md)."
-                    ].join("\n");
-                } else if (diagnostics.includes("print timeout")) {
-                    advice = [
-                        "",
-                        "Likely cause:",
-                        "The print timeout elapsed; partial edits may exist on disk — compare git status with the baseline before retrying.",
-                        "",
-                        "Next step:",
-                        "Split the assignment into smaller sequential delegations."
-                    ].join("\n");
+                if (!parsed.ok) {
+                    finish(cliFailure([
+                        "Antigravity exited 0 but did not return a JSON object.",
+                        parsed.error,
+                        diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
+                        diagnosticBlock("Raw stdout", stdout, maxReportChars).trim()
+                    ].filter(Boolean)));
+                    return;
                 }
 
+                const payload = parsed.value;
+                if (payload.status !== "SUCCESS") {
+                    const failureResponse = typeof payload.response === "string"
+                        ? payload.response.trim()
+                        : "";
+                    let fullReportLines = [];
+                    if (failureResponse) {
+                        const truncated = failureResponse.length > maxReportChars;
+                        const saveResult = await persistEngineerReport({
+                            response: failureResponse,
+                            env,
+                            mkdirImpl,
+                            writeFileImpl,
+                            randomBytesImpl,
+                            resolveWorktreeRootImpl
+                        });
+                        fullReportLines = buildFullReportToolLines(saveResult, truncated, maxReportChars);
+                    }
+
+                    finish(outcome({
+                        outcomeName: "agent_failure",
+                        isError: true,
+                        text: [
+                            "Outcome: agent_failure",
+                            "The Antigravity CLI exited 0 and returned structured output, so the process started.",
+                            "The agent run itself did not succeed. This is not a successful implementation.",
+                            `Status: ${payload.status ?? "missing"}`,
+                            payload.error
+                                ? `Error: ${truncate(String(payload.error), 4_000)}`
+                                : "",
+                            ...fullReportLines,
+                            diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
+                            "",
+                            "Execution metadata:",
+                            formatMetadata(payload, model)
+                        ].filter(Boolean).join("\n")
+                    }));
+                    return;
+                }
+
+                const response = typeof payload.response === "string"
+                    ? payload.response.trim()
+                    : "";
+
+                if (!response) {
+                    let advice = "";
+                    if (
+                        diagnostics.includes('required the "command" permission') ||
+                        diagnostics.includes("soft-deny") ||
+                        diagnostics.includes("soft-denied")
+                    ) {
+                        advice = [
+                            "",
+                            "Likely cause:",
+                            "A shell command was denied by the Antigravity permission policy.",
+                            "",
+                            "Next step:",
+                            "Tell the engineer exactly which commands it may run, or add a narrow allow rule in ~/.gemini/antigravity-cli/settings.json (docs/permissions.md)."
+                        ].join("\n");
+                    } else if (diagnostics.includes("print timeout")) {
+                        advice = [
+                            "",
+                            "Likely cause:",
+                            "The print timeout elapsed; partial edits may exist on disk — compare git status with the baseline before retrying.",
+                            "",
+                            "Next step:",
+                            "Split the assignment into smaller sequential delegations."
+                        ].join("\n");
+                    }
+
+                    finish(outcome({
+                        outcomeName: "agent_failure",
+                        isError: true,
+                        text: [
+                            "Outcome: agent_failure",
+                            "Antigravity reported SUCCESS but returned an empty response.",
+                            "Treat the implementation as not completed.",
+                            diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim(),
+                            "",
+                            "Execution metadata:",
+                            formatMetadata(payload, model),
+                            advice
+                        ].filter(Boolean).join("\n")
+                    }));
+                    return;
+                }
+
+                const truncated = response.length > maxReportChars;
+                const saveResult = await persistEngineerReport({
+                    response,
+                    env,
+                    mkdirImpl,
+                    writeFileImpl,
+                    randomBytesImpl,
+                    resolveWorktreeRootImpl
+                });
+                const fullReportLines = buildFullReportToolLines(saveResult, truncated, maxReportChars);
+
                 finish(outcome({
-                    outcomeName: "agent_failure",
-                    isError: true,
+                    outcomeName: "agent_success",
+                    isError: false,
                     text: [
-                        "Outcome: agent_failure",
-                        "Antigravity reported SUCCESS but returned an empty response.",
-                        "Treat the implementation as not completed.",
-                        diagnosticBlock("CLI diagnostics", diagnostics).trim(),
+                        "Outcome: agent_success",
+                        "The implementation engineer finished a run. This report is evidence for the Team Lead. It is not approval.",
+                        ...fullReportLines,
                         "",
+                        truncate(response, maxReportChars),
+                        "",
+                        "---",
                         "Execution metadata:",
                         formatMetadata(payload, model),
-                        advice
+                        diagnostics
+                            ? diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim()
+                            : ""
                     ].filter(Boolean).join("\n")
                 }));
-                return;
+            } catch (error) {
+                finish(cliFailure([
+                    `Antigravity bridge internal error: ${errorText(error)}`
+                ]));
             }
-
-            finish(outcome({
-                outcomeName: "agent_success",
-                isError: false,
-                text: [
-                    "Outcome: agent_success",
-                    "The implementation engineer finished a run. This report is evidence for the Team Lead. It is not approval.",
-                    "",
-                    truncate(response),
-                    "",
-                    "---",
-                    "Execution metadata:",
-                    formatMetadata(payload, model),
-                    diagnostics
-                        ? diagnosticBlock("CLI diagnostics", diagnostics).trim()
-                        : ""
-                ].filter(Boolean).join("\n")
-            }));
         });
     });
 }
@@ -1007,6 +1143,7 @@ export async function runWithModelFallback({
     const log = dependencies.log ?? (() => {});
     const hardTimeoutMs = initialHardTimeoutMs ?? HARD_TIMEOUT_MS;
     const cliTimeout = initialCliTimeout ?? CLI_TIMEOUT;
+    const maxReportChars = dependencies.maxReportChars ?? resolveMaxReportChars(env).limit;
     const fallbackList = resolveFallbackModels(env);
 
     const candidateFallbacks = [];
@@ -1046,6 +1183,8 @@ export async function runWithModelFallback({
             cliTimeout: currentCliTimeout,
             hardTimeoutMs: currentHardTimeoutMs,
             terminateGraceMs,
+            maxReportChars,
+            env,
             ...dependencies,
             log
         });
@@ -1127,15 +1266,19 @@ export async function delegateToAntigravity(input, dependencies = {}) {
         const bin = dependencies.bin ?? resolveAgyBin(dependencies.env);
         const timeouts = resolveTimeouts(dependencies.env);
         warnInvalidTimeout(timeouts.warning);
+        const reportChars = resolveMaxReportChars(dependencies.env ?? process.env);
+        warnInvalidMaxReportChars(reportChars.warning);
         const cliTimeout = dependencies.cliTimeout ?? timeouts.cliTimeout;
         const hardTimeoutMs = dependencies.hardTimeoutMs ?? timeouts.hardTimeoutMs;
         const terminateGraceMs = dependencies.terminateGraceMs ?? TERMINATE_GRACE_MS;
+        const maxReportChars = dependencies.maxReportChars ?? reportChars.limit;
 
         if (isolation === "none") {
             return await runWithModelFallback({
                 cliTimeout,
                 hardTimeoutMs,
                 terminateGraceMs,
+                maxReportChars,
                 ...dependencies,
                 prompt,
                 cwd,
@@ -1272,6 +1415,7 @@ export async function delegateToAntigravity(input, dependencies = {}) {
                 cliTimeout,
                 hardTimeoutMs,
                 terminateGraceMs,
+                maxReportChars,
                 ...dependencies,
                 prompt,
                 cwd: delegationContext.worktreePath,

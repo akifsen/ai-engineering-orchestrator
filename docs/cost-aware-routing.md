@@ -59,7 +59,7 @@ Discovery can stay on a lower-effort path. Explorer is a read-only lookup. Archi
 
 A four-agent workflow on a typo spends more than it saves. The policy allows the Team Lead, or fast-worker, to make a trivial edit directly.
 
-The failure mode this repository is built to resist is the opposite one: the expensive Team Lead implements a feature because the tool is available and the delegation feels like overhead. For substantive work, the current presets still require Antigravity even when the Team Lead could write the code. That requirement is the reference routing policy. Whether it also saves money depends on the implementation path being economically favorable for your account.
+The failure mode this repository is built to resist is the opposite one: the expensive Team Lead implements a feature because the tool is available and the delegation feels like overhead. For substantive work, the current presets still require Antigravity even when the Team Lead could write the code. That requirement is the reference routing policy. Whether it also saves money depends on the implementation path being economically favorable for your account. Rules for keeping Team Lead context small during substantive tasks are in [docs/context-hygiene.md](context-hygiene.md).
 
 ## What routing is not
 
