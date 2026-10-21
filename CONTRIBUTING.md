@@ -29,3 +29,9 @@ A routing change is a documentation change plus a policy change. Update the affe
 ## Diffs
 
 Keep a change focused. A preset wording fix does not need a bridge rewrite. A bridge fix should not rewrite the policy unless the outcome labels changed and the docs would otherwise lie.
+
+## Releases
+
+A release is a tag. Bump the version in `package.json`, both bridge `package.json` and `package-lock.json` files, both `server.test.js` expectations, and the "current repository versions" test in `scripts/test/release-publish.test.js`; `node scripts/check-release-tag.mjs` with `RELEASE_TAG=vX.Y.Z` confirms they agree. Merge that commit, tag it `vX.Y.Z`, and push the tag. The publish workflow runs the tests, packs the artifact once, and publishes it through npm Trusted Publishing. It accepts an already published version only when the registry tarball is byte-identical to the one it packed.
+
+Publish from the workflow, not by hand. If a manual publish is unavoidable, do it from Linux, macOS, or WSL with the npm version the workflow pins and from a checkout that keeps LF line endings. A tarball packed on Windows carries different file modes (`scripts/aeo.mjs` loses its executable bit) and, with `core.autocrlf=true`, CRLF line endings, so its checksum never matches the workflow's artifact and the publish job for that tag stays red permanently.
