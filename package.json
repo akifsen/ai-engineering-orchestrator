@@ -1,6 +1,6 @@
 {
   "name": "ai-engineering-orchestrator",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Project-scoped installer for cost-aware AI engineering orchestration with Codex, Claude, Antigravity, and Cursor.",
   "type": "module",
   "license": "MIT",
