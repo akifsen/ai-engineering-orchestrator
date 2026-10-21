@@ -18,7 +18,7 @@ import {
     touchDelegation
 } from "./worktree.js";
 
-export const DEFAULT_MODEL = "composer-2.5";
+export const DEFAULT_MODEL = "cursor-grok-4.6-high";
 export const DEFAULT_TIMEOUT_MINUTES = 30;
 export const MIN_TIMEOUT_MINUTES = 1;
 export const MAX_TIMEOUT_MINUTES = 120;

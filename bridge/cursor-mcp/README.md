@@ -12,7 +12,7 @@ Per the orchestration policy, use it when Antigravity is unavailable (quota, aut
 | --- | --- | --- |
 | `prompt` | yes | The implementation contract. Maximum 24,000 characters. |
 | `cwd` | yes | Absolute path of the repository to inspect and edit. |
-| `model` | no | Cursor model slug. Default `composer-2.5` (overridable via `AEO_CURSOR_MODEL`). |
+| `model` | no | Cursor model slug. Default `cursor-grok-4.6-high` (overridable via `AEO_CURSOR_MODEL`). |
 | `timeoutMinutes` | no | Hard timeout 1..120 minutes for this call. Default from `AEO_CURSOR_TIMEOUT_MINUTES` or 30. |
 | `isolation` | no | `none` or `worktree`. Default `none` edits `cwd` in place. `worktree` runs the engineer in a bridge-owned detached git worktree. |
 | `delegationId` | no | 10-character hexadecimal ID. With isolation `worktree`, revise an existing isolated delegation in its existing worktree. |
@@ -83,7 +83,7 @@ Needs a logged-in Cursor Agent. This does not use the bridge:
 
 ```bash
 # Windows (example — use your resolved node.exe + index.js)
-echo Reply with the single word ready. | node.exe path\to\index.js -p --output-format json --model composer-2.5 --trust --force --workspace .
+echo Reply with the single word ready. | node.exe path\to\index.js -p --output-format json --model cursor-grok-4.6-high --trust --force --workspace .
 ```
 
 `cursor-agent status` should show logged-in state. Auth and quota errors appear as non-zero exit or `is_error` in JSON output.
@@ -103,7 +103,7 @@ Run a one-line delegation in a temp git repo and confirm the outcome (see projec
 | Variable | Meaning |
 | --- | --- |
 | `CURSOR_AGENT_BIN` | Override executable or `index.js` path. |
-| `AEO_CURSOR_MODEL` | Default model slug (default `composer-2.5`). |
+| `AEO_CURSOR_MODEL` | Default model slug (default `cursor-grok-4.6-high`). |
 | `AEO_CURSOR_TIMEOUT_MINUTES` | Default timeout minutes, 1..120 (default 30). |
 | `AEO_MAX_REPORT_CHARS` | Max inline engineer report characters in MCP tool results (default 32000; clamped 4000..200000). Full report is written to `<AEO_WORKTREE_ROOT>/runs/<run-id>/report.md`, or `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when unset; runs are not auto-cleaned. |
 | `AEO_WORKTREE_TTL_HOURS` | Stale worktree sweep TTL in hours (default 24; `0` disables). Invalid or negative values fall back to 24 with a one-time stderr warning. |
