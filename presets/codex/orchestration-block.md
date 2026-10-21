@@ -154,7 +154,7 @@ Apply one delegation at a time. After each apply: read `git status --short` and 
 
 A revision of an isolated delegation passes the same `delegationId` so the engineer continues in the same worktree. Do not run two delegations against the same `delegationId` at the same time.
 
-Call `discard_delegation` after a delegation is applied and approved, or abandoned. Leftovers can be inspected with `git worktree list` and cleaned with `git worktree prune`.
+`apply_delegation` removes the worktree on a successful `applied` or `no_changes` result unless `keepWorktree` was passed. Call `discard_delegation` for kept, conflicted, or abandoned delegations; it is idempotent when the worktree is already gone. Stale unapplied delegations are swept after `AEO_WORKTREE_TTL_HOURS` (default 24 hours). Leftovers can be inspected with `git worktree list` and cleaned with `git worktree prune`.
 
 Parallelism multiplies Team Lead review cost; use it only for genuinely independent work.
 
@@ -175,6 +175,7 @@ Bridge outcomes mean:
 - `cli_failure`: the process did not complete a run. Not an implementation result.
 - `timeout`: the bridge stopped the process. The work is not complete.
 - `validation_failure`: the call was rejected before Antigravity started.
+- `quota_or_auth_failure`: the engineer could not run because of quota or authentication. For quota, the bridge already retried every configured fallback model. Route the same contract to Cursor.
 - `applied`: patch applied to the main working tree as unstaged changes. Not approval.
 - `no_changes`: the isolated delegation produced no file changes to apply.
 - `apply_conflict`: the patch failed `git apply --check` against the main working tree. Not a revision.
