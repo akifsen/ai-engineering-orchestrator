@@ -10,7 +10,7 @@ Allowing more commands increases how much the engineer can do without you. Enabl
 | --- | --- |
 | Team Lead | Read git state, run validation, call `delegate_antigravity`, `apply_delegation`, and `discard_delegation`. Deny push, reset, clean, rebase, merge, and commit. |
 | Antigravity | Accept file edits in the workspace. Allow read-only git and the project's test or build commands. Deny history changes and `.git` writes. |
-| Bridge | Spawn `agy` without a shell. Do not pass `--dangerously-skip-permissions`. |
+| Bridge | Spawn `agy` without a shell. The bridge does not disable Antigravity permission checks. Do not pass `--dangerously-skip-permissions`. |
 
 The bridge asks Antigravity to run in `accept-edits` mode so headless file edits are not blocked on an interactive diff review. Shell commands are a separate decision. In headless mode, a command that still requires approval is soft-denied: the process can exit successfully while the command did not run. The Team Lead must treat that as not run.
 

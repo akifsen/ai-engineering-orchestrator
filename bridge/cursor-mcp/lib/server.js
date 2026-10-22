@@ -38,7 +38,7 @@ export function createServer() {
         "delegate_cursor",
         {
             title: "Delegate to Cursor",
-            description: "Delegate a bounded implementation task to the Cursor Implementation Engineer (Composer). The engineer may inspect the repository and edit files inside cwd. Use when Antigravity is unavailable (quota, auth, or CLI failure) per orchestration policy, or as a parallel peer with isolation \"worktree\" for independent scopes. The Team Lead must independently verify the diff and tests. Cursor does not approve its own work.",
+            description: "Delegate a bounded implementation task to the Cursor Implementation Engineer. The engineer may inspect the repository and edit files inside cwd. Use when Antigravity is unavailable (quota, auth, or CLI failure) per orchestration policy, or as a parallel peer with isolation \"worktree\" for independent scopes. The Team Lead must independently verify the diff and tests. Cursor does not approve its own work.",
             annotations: {
                 readOnlyHint: false,
                 destructiveHint: false,
@@ -63,7 +63,7 @@ export function createServer() {
                     .min(1)
                     .regex(/^[A-Za-z0-9._:[\]=,-]+$/)
                     .optional()
-                    .describe("Optional Cursor model slug. Omit to use the configured default model (composer-2.5)."),
+                    .describe("Optional Cursor model slug. Omit to use the configured default model (cursor-grok-4.6-high)."),
                 timeoutMinutes: z
                     .number()
                     .int()

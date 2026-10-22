@@ -11,6 +11,17 @@ The current reference mapping is:
 
 A future mapping can send the same Implementation Engineer role to another CLI or MCP-backed coding model. The policy should keep talking about the role. These presets name the current tools: `delegate_antigravity` (default) and `delegate_cursor` (fallback and parallel peer).
 
+## Core principles
+
+- Substantive implementation uses Antigravity by default. The Team Lead does not bypass it because it could write the code itself.
+- Trivial edits stay small: a typo, a comment, formatting, an obvious rename, a tiny config correction.
+- The Team Lead records `git status --short` before substantive work and attributes later edits only from that baseline.
+- `agent_success` is a report, not approval.
+- APPROVED and CHANGES REQUIRED are the only gate outcomes. Revisions go back to Antigravity.
+- No cost meter, failover, telemetry product, or cloud control plane is included. Do not document those as if they exist.
+
+Discovery, design, review, and trivial edits stay separate jobs. AEO installs supporting roles under namespaced ids so they do not replace agents you already have.
+
 ## Parts
 
 | Part | What it is |
@@ -65,3 +76,49 @@ Worktree isolation enables concurrent delegations without git conflicts in the m
 There is no orchestrator service, no queue, and no router that measures tokens and picks a vendor. Routing is the Team Lead following the policy file. The bridge forwards token counts when the Antigravity CLI reports them. It does not price those tokens or fail over to another provider.
 
 The diagrams in [../diagrams/architecture.md](../diagrams/architecture.md) show the same flow in more detail: overall structure, the substantive path, the revision loop, and the routing decision.
+
+## Repository layout
+
+```text
+ai-engineering-orchestrator/
+├── README.md
+├── LICENSE
+├── package.json               public npm package and the aeo binary
+├── SECURITY.md
+├── CONTRIBUTING.md
+├── .gitignore
+├── .npmignore
+├── .github/workflows/bridge.yml    credential-free bridge, installer, and npm package tests
+├── .github/workflows/publish.yml   tag-only npm publish via Trusted Publishing
+├── bridge/antigravity-mcp/    MCP server, tests, and bridge README
+├── bridge/cursor-mcp/         Cursor MCP server, kept inside this package
+├── presets/codex/             orchestration fragment, config fragment, namespaced agents
+├── presets/claude/            orchestration rule, MCP fragment, namespaced agents, hook example
+├── scripts/aeo.mjs            install, update, uninstall, status, and doctor
+├── scripts/measure-delegation.mjs   account-specific token row helper (source checkout only)
+├── scripts/check-release-tag.mjs, pack-release-artifact.mjs, publish-packed-release.mjs   release tooling
+├── install.ps1                Windows wrapper for a source checkout
+├── install.sh                 shell wrapper for a source checkout
+├── antigravity/settings.example.json
+├── docs/
+│   ├── architecture.md
+│   ├── context-hygiene.md
+│   ├── cost-aware-routing.md
+│   ├── customization.md
+│   ├── demo.md
+│   ├── implementation-contract.md
+│   ├── install.md
+│   ├── permissions.md
+│   ├── policy-vs-capability.md
+│   ├── quality-gate.md
+│   ├── revision-loop.md
+│   ├── troubleshooting.md
+│   ├── proposals/            design notes
+│   └── assets/               demo recording output (see demo.md)
+├── examples/
+└── diagrams/architecture.md
+```
+
+The bridge also contains `lib/` and `test/`. Those are the implementation and the automated checks, not extra products.
+
+A local `node_modules` directory can exist in a working tree without belonging in the npm package or a source archive. The published package is the file list in `package.json`; `scripts/test/` and `scripts/measure-delegation.mjs` are not shipped. Pack a source snapshot with `git archive --format=zip --prefix=ai-engineering-orchestrator/ -o aeo-source.zip HEAD`. See [Source archive](install.md#source-archive).

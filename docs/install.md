@@ -55,6 +55,31 @@ Before AEO changes a shared file that already exists, it copies that file to `~/
 
 If `npm ci` fails while installing the bridge, MCP configuration is not activated.
 
+## What installation changes
+
+AEO owns only namespaced files, managed blocks, and the `aeo-antigravity` MCP entry.
+
+Codex, inside the target project:
+
+- append or update the marked block in `AGENTS.md`
+- append or update the marked block in `.codex/config.toml`
+- add `.codex/agents/aeo-explorer.toml`, `aeo-architect.toml`, `aeo-reviewer.toml`, and `aeo-fast-worker.toml`
+
+Claude, inside the target project:
+
+- add `.claude/rules/aeo-orchestration.md`
+- add `.claude/agents/aeo-explorer.md`, `aeo-architect.md`, `aeo-reviewer.md`, and `aeo-fast-worker.md`
+- add `mcpServers["aeo-antigravity"]` to `.mcp.json`
+- append the three allow entries `mcp__aeo-antigravity__delegate_antigravity`, `mcp__aeo-antigravity__apply_delegation`, and `mcp__aeo-antigravity__discard_delegation` to `.claude/settings.local.json`, each only when that exact string is missing (see [permissions](permissions.md))
+
+The bridge is copied to `<project>/.aeo/bridge/antigravity-mcp/` and its dependencies are installed there. `AGY_BIN` is used when it is set. Otherwise the bridge runs `agy` from `PATH`.
+
+The project Codex block does not set your model, reasoning effort, sandbox, approval policy, or trust. Field names are listed under [What a project looks like after install](#what-a-project-looks-like-after-install). `CLAUDE.md` is never modified. Existing MCP servers and agents stay. A second install reconciles AEO-owned content and does not duplicate blocks or entries. Agent field edits are covered in [customization](customization.md).
+
+`uninstall` removes unchanged managed blocks, the namespaced files whose bytes still match the manifest, and the AEO MCP and permission entries. A customized AEO file or block is left in place and reported. It does not restore an older backup over edits you made later. If AEO created a file and nothing of yours remains, that file can be deleted. `--force-remove-modified` also deletes customized AEO files. A customized block that uninstall keeps is a preserved orphaned AEO block: the manifest entry that owned it is removed on purpose, and a later install will not adopt or overwrite it. Hash-level rules are in [Update safety](#update-safety).
+
+`status` and `doctor` only read. Doctor does not change configuration. `status` reports each known AEO file as owned and unchanged, owned and drifted, present but not owned, or missing. An unowned file stays `PRESENT BUT NOT OWNED` even when its bytes match the preset. Doctor reports that collision and does not repair it.
+
 ## Global install
 
 AEO supports a user-scope `--global` mode for configuring user-level Codex and Claude environments across projects:
@@ -77,7 +102,7 @@ Pass either `--target <project>` or `--global`, not both.
 | `~/.codex/AGENTS.md` | User text, plus one AEO orchestration block (or replaced with `--replace-codex-agents-md`) |
 | `~/.codex/agents/aeo-*.toml` | Namespaced Codex agent definitions |
 | `~/.claude.json` | Existing servers, plus `mcpServers["aeo-antigravity"]` |
-| `~/.claude/settings.json` | Existing permissions, plus one allow entry |
+| `~/.claude/settings.json` | Existing permissions, plus three allow entries |
 | `~/.claude/rules/aeo-orchestration.md` | Orchestration rule |
 | `~/.claude/agents/aeo-*.md` | Namespaced Claude agent definitions |
 | `~/.aeo/bridge/antigravity-mcp/` | Runtime bridge files and installed dependencies |
@@ -97,7 +122,7 @@ When both a global AEO installation (`~/.aeo/global-install-manifest.json`) and 
 
 Even AEO-owned files become user-controlled once you edit them. AEO records the version it installed and refuses to silently overwrite drifted files.
 
-You may customize agent model settings. AEO tracks installed file hashes, so normal updates preserve modified agent files instead of silently replacing them. That includes `model`, `model_reasoning_effort`, and `developer_instructions` in `.codex/agents/aeo-*.toml`, and `model`, `effort`, `tools`, and the instructions in `.claude/agents/aeo-*.md`. The same protection applies to `.claude/rules/aeo-orchestration.md` and to bridge source files copied into `.aeo/bridge/antigravity-mcp/`. `node_modules` is not hashed and is not listed in the manifest.
+You may customize agent model settings. AEO tracks installed file hashes, so normal updates preserve modified agent files instead of silently replacing them. That includes `model`, `model_reasoning_effort`, and `developer_instructions` in `.codex/agents/aeo-*.toml`, and `model`, `effort`, `tools`, and the instructions in `.claude/agents/aeo-*.md`. The same protection applies to `.claude/rules/aeo-orchestration.md` and to bridge source files copied into `.aeo/bridge/antigravity-mcp/`. `node_modules` is not hashed and is not listed in the manifest. Field-level guidance is in [customization](customization.md).
 
 `install` and `update` are the same reconcile. There is no separate release channel.
 
@@ -161,7 +186,7 @@ Generic names such as `explorer`, `architect`, `reviewer`, `fast_worker`, `Explo
 │   ├── config.toml                   user tables, plus one AEO block
 │   └── agents/aeo-*.toml
 └── .claude/
-    ├── settings.local.json           existing permissions, plus one allow entry
+    ├── settings.local.json           existing permissions, plus three allow entries
     ├── rules/aeo-orchestration.md
     └── agents/aeo-*.md
 ```
@@ -195,13 +220,15 @@ Do not replace `CLAUDE.md`, `~/.claude/CLAUDE.md`, `~/.claude/settings.json`, or
 1. Copy [presets/claude/rules/aeo-orchestration.md](../presets/claude/rules/aeo-orchestration.md) to `<project>/.claude/rules/aeo-orchestration.md`.
 2. Copy [presets/claude/agents/](../presets/claude/agents/) to `<project>/.claude/agents/`. Leave every other agent file alone.
 3. If `.mcp.json` does not exist, you can start from [presets/claude/mcp-entry.example.json](../presets/claude/mcp-entry.example.json) and replace `<PROJECT>`. If it exists, add only `mcpServers["aeo-antigravity"]`. Keep every other server. If that key already exists and you did not add it with AEO, stop.
-4. In `<project>/.claude/settings.local.json`, append this allow entry only when it is absent:
+4. In `<project>/.claude/settings.local.json`, append each of these allow entries only when it is absent:
 
 ```text
 mcp__aeo-antigravity__delegate_antigravity
+mcp__aeo-antigravity__apply_delegation
+mcp__aeo-antigravity__discard_delegation
 ```
 
-[presets/claude/settings-permission.example.json](../presets/claude/settings-permission.example.json) shows that single entry. It is not a replacement for your permissions object. Do not remove or reorder unrelated allow or deny rules.
+[presets/claude/settings-permission.example.json](../presets/claude/settings-permission.example.json) shows those three entries. It is not a replacement for your permissions object. Do not remove or reorder unrelated allow or deny rules.
 
 Git allow and deny examples you may merge yourself are in [permissions](permissions.md). The installer does not write them.
 
@@ -214,7 +241,7 @@ Remove only:
 - `.claude/rules/aeo-orchestration.md`
 - `.claude/agents/aeo-explorer.md`, `aeo-architect.md`, `aeo-reviewer.md`, and `aeo-fast-worker.md`
 - `mcpServers["aeo-antigravity"]`
-- the single allow string `mcp__aeo-antigravity__delegate_antigravity`
+- the three allow strings `mcp__aeo-antigravity__delegate_antigravity`, `mcp__aeo-antigravity__apply_delegation`, and `mcp__aeo-antigravity__discard_delegation`
 - `<project>/.aeo/` if you created it for this install
 
 Leave the rest of each file. If you customized a managed block and want to keep that text, leave the block in place. Markers without an install manifest are not a reason to delete it. Delete `AGENTS.md`, `.codex/config.toml`, `.mcp.json`, or `settings.local.json` only when AEO created that file and no user-owned content remains. If you edited an AEO agent, rule, or bridge source file, keep that file unless you mean to discard the edit. The `uninstall` command does that unless you pass `--force-remove-modified`.
@@ -247,6 +274,28 @@ Bridge MCP servers read these from the environment of the process that starts th
 | `AEO_AGY_FALLBACK_MODELS` | Comma-separated Gemini slugs to try on quota exhaustion (default `gemini-3.8-flash-high`; `none` disables). |
 | `AEO_WORKTREE_ROOT` | Directory for bridge-owned worktrees (default under the OS temp directory). |
 | `AEO_WORKTREE_TTL_HOURS` | Hours before unapplied delegations are swept on a new isolated delegation (default 24; `0` disables). |
+
+## Bridge setup
+
+The Antigravity server is in [bridge/antigravity-mcp](../bridge/antigravity-mcp/README.md).
+
+```bash
+cd bridge/antigravity-mcp
+npm install
+npm test
+```
+
+`npm test` spawns the server on stdio and checks that the tools (`delegate_antigravity`, `apply_delegation`, `discard_delegation`) are listed. It does not need `agy` credentials. Normal use does not need this checkout: `aeo install` copies the Antigravity bridge into the target and installs its dependencies there.
+
+A live edit still needs a logged-in `agy`:
+
+```bash
+agy -p "Reply with the single word ready." --mode accept-edits --output-format json --print-timeout 2m
+```
+
+Timeouts, print-timeout, and process kill limits are documented in the [Antigravity bridge README](../bridge/antigravity-mcp/README.md). On model quota exhaustion the bridge retries with the models listed in `AEO_AGY_FALLBACK_MODELS` (default `gemini-3.8-flash-high`; `none` disables) before returning `quota_or_auth_failure`. Worktree isolation (`isolation: "worktree"`) runs the engineer in a detached worktree for parallel delegations, applied via `apply_delegation`; a successful apply removes the worktree unless `keepWorktree: true`, stale unapplied delegations are swept after `AEO_WORKTREE_TTL_HOURS` (default 24), and `discard_delegation` covers kept, conflicted, or abandoned delegations.
+
+[bridge/cursor-mcp](../bridge/cursor-mcp/README.md) exposes `delegate_cursor` for the same Implementation Engineer contract. It is the fallback when Antigravity is unavailable and a parallel peer of Antigravity. It supports worktree isolation (`isolation: "worktree"`) with `apply_delegation` and `discard_delegation` for parallel delegations on independent scopes, with the same automatic worktree removal on successful apply and TTL sweep behavior as the Antigravity bridge. Register `aeo-cursor` manually (see the bridge README, [presets/claude/mcp-entry.cursor.example.json](../presets/claude/mcp-entry.cursor.example.json), and [presets/codex/mcp-entry.cursor.example.toml](../presets/codex/mcp-entry.cursor.example.toml)). The installer copies only the Antigravity bridge today.
 
 ## Source archive
 
