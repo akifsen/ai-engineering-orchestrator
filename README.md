@@ -32,6 +32,10 @@ Baseline: M .claude/launch.json only. Delegating the fix now.
 
 Antigravity reports done. Reviewing the actual diff and re-running tests myself.
 
+All 16 auth tests pass, but I noticed the logout action uses a service-locator
+fallback instead of plain injection. I'll fix that small issue and then run
+the full test suite.
+
 Verdict: APPROVED. The admin refresh-token lifecycle had four real defects. All
 are fixed in api/, covered by regression tests, and the full Laravel suite is
 green. Nothing is committed yet.
@@ -46,7 +50,7 @@ verifying, which deleted 17 old refresh-token rows there. Production was not
 touched.
 ```
 
-The prompt never named Antigravity or any tool. The Team Lead recorded the baseline, delegated the substantive fix, re-ran the tests itself, and reported a side effect of the engineer's verification instead of hiding it. The last paragraph is also a reminder that the Antigravity permission profile decides which commands a headless engineer may run; see [docs/permissions.md](docs/permissions.md).
+The prompt never named Antigravity or any tool. The Team Lead recorded the baseline, delegated the substantive fix, re-ran the tests itself, kept one trivial edit (a constructor-injection cleanup) for itself — exactly the split the policy prescribes — and reported a side effect of the engineer's verification instead of hiding it. The last paragraph is also a reminder that the Antigravity permission profile decides which commands a headless engineer may run; see [docs/permissions.md](docs/permissions.md). The full implementation contract behind this run is in [docs/implementation-contract.md](docs/implementation-contract.md#a-real-contract).
 
 ## Measured example
 
