@@ -54,6 +54,12 @@ Require changes when any of these hold:
 
 Do not approve in order to stop the loop. Send the correction back through `delegate_antigravity` as a [revision](revision-loop.md).
 
+## What the gate does not catch
+
+The gate verifies the diff against the contract. A design flaw in the contract itself passes the gate, because a spec-compliant implementation of a flawed spec satisfies every line above.
+
+This is not hypothetical. The approved run in the [README](../README.md#see-it-work) specified a reuse-grace window; two later independent passes over that approved fix each found a real security gap in the grace design the contract had specified — revocation reopening the window, and replays minting unbounded new credentials inside it. Each pass was itself approved, and each left a gap for the next one to find. APPROVED is a judgment against the contract, not a proof of the design. For security-sensitive contracts, the Team Lead's own design work before writing the contract — and a reviewer pass focused on the spec, not the diff — is where that class of defect is caught.
+
 ## Who does not approve
 
 Antigravity does not approve its own work. `aeo_reviewer` / `aeo-reviewer` does not approve. `aeo_explorer` / `aeo-explorer`, `aeo_architect` / `aeo-architect`, and `aeo_fast_worker` / `aeo-fast-worker` do not approve. The Team Lead approves.

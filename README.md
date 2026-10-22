@@ -52,6 +52,8 @@ touched.
 
 The prompt never named Antigravity or any tool. The Team Lead recorded the baseline, delegated the substantive fix, re-ran the tests itself, kept one trivial edit (a constructor-injection cleanup) for itself — exactly the split the policy prescribes — and reported a side effect of the engineer's verification instead of hiding it. The last paragraph is also a reminder that the Antigravity permission profile decides which commands a headless engineer may run; see [docs/permissions.md](docs/permissions.md). The full implementation contract behind this run is in [docs/implementation-contract.md](docs/implementation-contract.md#a-real-contract).
 
+Full disclosure: two later independent passes over this approved fix each found a real security gap in the reuse-grace design the contract itself had specified. The engineer implemented the contract faithfully and the gate verified that faithfully — a contract-level design flaw passes the quality gate by construction. See [What the gate does not catch](docs/quality-gate.md#what-the-gate-does-not-catch).
+
 ## Measured example
 
 The Test B run above, measured against a control run on the same commit with the same prompt and all delegation tools removed, where the Team Lead implemented everything itself. One run per arm, October 2026.
