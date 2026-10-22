@@ -13,9 +13,40 @@ The economic thesis: expensive model decides, cheap model types.
 
 Test B is a prompt that never names Antigravity, and delegation happening anyway is the pass condition; see [examples/smoke-test.md](examples/smoke-test.md).
 
+Real excerpt from a Test B run on Claude Code against a Laravel project (October 2026). Trimmed for length; the Team Lead's wording is unchanged, and project-internal file names are generalized.
+
 ```text
-TODO: paste a short real excerpt of a Test B transcript here (the delegate_antigravity call and the Team Lead's APPROVED / CHANGES REQUIRED line). Do not fabricate.
+> Inspect the refresh-token lifecycle problem, implement the necessary
+> production-ready correction, add appropriate regression coverage, and verify
+> the result without unnecessarily changing the architecture.
+
+I'll start by locating the refresh-token code and capturing the git baseline,
+then decide the fix and delegate the implementation.
+
+Diagnosis done. Four lifecycle defects found in the admin refresh flow. Now
+writing the implementation contract and delegating to Antigravity.
+
+Baseline: M .claude/launch.json only. Delegating the fix now.
+
+  Used aeo-antigravity: delegate antigravity
+
+Antigravity reports done. Reviewing the actual diff and re-running tests myself.
+
+Verdict: APPROVED. The admin refresh-token lifecycle had four real defects. All
+are fixed in api/, covered by regression tests, and the full Laravel suite is
+green. Nothing is committed yet.
+
+Verification I ran myself
+  Auth and session test filter   65 passed
+  Full php artisan test          854 passed, 7 skipped (pre-existing)
+  Pint on changed files          passed
+
+Antigravity ran the new prune command against your local dev database while
+verifying, which deleted 17 old refresh-token rows there. Production was not
+touched.
 ```
+
+The prompt never named Antigravity or any tool. The Team Lead recorded the baseline, delegated the substantive fix, re-ran the tests itself, and reported a side effect of the engineer's verification instead of hiding it. The last paragraph is also a reminder that the Antigravity permission profile decides which commands a headless engineer may run; see [docs/permissions.md](docs/permissions.md).
 
 ## Measured example
 
