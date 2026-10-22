@@ -122,3 +122,11 @@ ai-engineering-orchestrator/
 The bridge also contains `lib/` and `test/`. Those are the implementation and the automated checks, not extra products.
 
 A local `node_modules` directory can exist in a working tree without belonging in the npm package or a source archive. The published package is the file list in `package.json`; `scripts/test/` and `scripts/measure-delegation.mjs` are not shipped. Pack a source snapshot with `git archive --format=zip --prefix=ai-engineering-orchestrator/ -o aeo-source.zip HEAD`. See [Source archive](install.md#source-archive).
+
+## The fallback chain in practice
+
+Both fallback layers have fired on real work (October 2026), on the same Laravel task family as the README's measured example.
+
+Model layer: in the measured run itself, the default Antigravity model was quota-exhausted. The bridge retried the same contract with the models in `AEO_AGY_FALLBACK_MODELS` and the run completed on the first fallback model. The Team Lead saw one `agent_success`; the retry was the bridge's job.
+
+Bridge layer: in a later session, Antigravity was out of quota at the CLI level, so the bridge returned `quota_or_auth_failure` and the policy handed the same contract to `delegate_cursor`. Cursor implemented the contract but could not run any commands. The Team Lead treated every blocked command as not run, per the [quality gate](quality-gate.md), ran the full verification itself — the integration tests, the wider admin suite, and formatting — and only then approved. A verification-blocked engineer degraded the run; the gate absorbed it.

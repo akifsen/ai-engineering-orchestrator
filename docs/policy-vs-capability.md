@@ -1,6 +1,6 @@
 # Policy versus capability
 
-Connecting an MCP tool does not make the Team Lead use it.
+Connecting an MCP tool does not make the Team Lead use it reliably, and it does not make the delegation governed. Both of those come from the policy.
 
 | Piece | Role |
 | --- | --- |
@@ -25,6 +25,12 @@ Both presets use the mandatory wording. A softer Claude policy next to a strict 
 The bridge instructions say that Antigravity implements and that the Team Lead must verify. That hint helps a client that reads tool descriptions. It is not loaded as the project's standing policy, and a client can ignore it. The policy file is what the Team Lead session is instructed to follow on every task.
 
 If substantive work is implemented without `delegate_antigravity`, treat that as a policy failure, not as a bridge failure. The natural check is [Test B in the smoke test](../examples/smoke-test.md). The prompt does not name Antigravity. If the Team Lead still delegates the implementation, the policy is in effect.
+
+## A capability can route on its own
+
+The inverse claim — that without the policy the Team Lead will never delegate — turned out to be false in practice. While preparing the README's control run (October 2026), the AEO policy and servers were removed, but two standalone delegation bridges remained registered in the user's Claude config. Given the Test B prompt, the Team Lead delegated through one of them anyway, unprompted.
+
+Two consequences. First, once any delegation tool is visible, a capable model may delegate opportunistically; the policy's job is not to enable delegation but to govern it — mandatory for substantive work, contract-shaped, baseline-recorded, gate-checked, with a stated fallback order. An opportunistic delegation has none of those guarantees. Second, a clean no-delegation measurement requires removing the delegation tools from the session, not only the policy; disabling the policy alone does not produce a control run.
 
 ## Evidence outranks the report
 
