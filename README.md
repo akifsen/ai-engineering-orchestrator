@@ -54,11 +54,15 @@ The prompt never named Antigravity or any tool. The Team Lead recorded the basel
 
 ## Measured example
 
-| Task | Team Lead tokens | Engineer tokens | Total cost with delegation | Estimated cost without delegation |
-| --- | --- | --- | --- | --- |
-| TODO | TODO | TODO | TODO | TODO |
+The Test B run above, measured against a control run on the same commit with the same prompt and all delegation tools removed, where the Team Lead implemented everything itself. One run per arm, October 2026.
 
-Numbers come from `scripts/measure-delegation.mjs` in a source checkout (it is not part of the npm package) and are account-specific. The script prints rows in this format. AEO ships no cost meter and this repository does not guarantee a savings number. See [How to measure your own savings](docs/cost-aware-routing.md#how-to-measure-your-own-savings).
+| Task | Team Lead tokens | Engineer tokens | Cost with delegation | Measured cost without delegation |
+| --- | --- | --- | --- | --- |
+| Test B: admin refresh-token lifecycle fix in a Laravel API | 580 in / 1.1k out / 2.7M cache read — $3.60, 3m 39s of Claude API time | 253.5k in / 66.3k out + 49.6k thinking (gemini-3.8-flash-high via `AEO_AGY_FALLBACK_MODELS`; covered by the author's subscription) | $3.60 | $4.32, 8m 54s of Claude API time |
+
+The honest reading of one measurement: the dollar gap was modest, 17 percent, and exists only because the engineer is covered by a separate subscription. The larger effect was expensive-model API time, 3m 39s against 8m 54s, a 59 percent reduction — on a usage-limited subscription that, not the dollar figure, is the binding constraint. Wall-clock time was about 30 percent longer with delegation, because the engineer's run is a round trip. Both runs independently converged on a reuse-grace-window design, and the control run found and fixed its own transaction-rollback bug under test — neither arm produced an obviously weaker fix.
+
+Numbers come from Claude Code's `/usage` panel and the bridge's execution metadata; `scripts/measure-delegation.mjs` in a source checkout (it is not part of the npm package) prints rows in this format. Results are account-specific, n=1 per arm. AEO ships no cost meter and this repository does not guarantee a savings number. See [How to measure your own savings](docs/cost-aware-routing.md#how-to-measure-your-own-savings).
 
 ## Overview
 

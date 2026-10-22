@@ -94,6 +94,8 @@ The measurement script exists to help answer two open questions, not to close th
 
 A review and revision loop can consume more Team Lead tokens than direct implementation would have. Delegation round-trips add latency: the bridge waits up to the configured timeout per call. Whether the split still saves money on a given task depends on those costs as well as the token rates you pass in.
 
+One measured pair so far, the README's [measured example](../README.md#measured-example), gives a first partial answer to both. On that task the review pass did not erase the saving: Team Lead cost was 17 percent lower with delegation, and Team Lead API time 59 percent lower — the stronger effect on a usage-limited subscription. The latency question resolved against delegation: wall-clock time was about 30 percent longer. One run per arm; treat it as a data point, not a conclusion.
+
 ## Personal example
 
 Point-in-time personal example, not repository logic. This is not proof that Gemini is universally cheaper.
