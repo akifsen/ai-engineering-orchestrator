@@ -1,0 +1,2 @@
+{"sessionId":"session-bench-plain","type":"assistant","timestamp":"2026-10-23T11:00:00.000Z","message":{"model":"claude-fable-5-1","usage":{"input_tokens":100,"output_tokens":25,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"text","text":"Hello, what can I do?"}]}}
+{"type":"assistant","timestamp":"2026-10-23T11:00:15.000Z","message":{"model":"claude-fable-5-1","usage":{"input_tokens":200,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"text","text":"I have completed your request."}]}}
