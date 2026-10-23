@@ -4,11 +4,11 @@ The Team Lead runs on the expensive model. Its context window is the primary cos
 
 ## What the bridge does
 
-The Antigravity bridge caps the inline engineer report returned to the Team Lead model to `AEO_MAX_REPORT_CHARS` (default 32000 characters).
+Both bridges, Antigravity and Cursor, cap the inline engineer report returned to the Team Lead model to `AEO_MAX_REPORT_CHARS` (default 32000 characters).
 
 The full un-truncated engineer report is written to disk at:
 - `<AEO_WORKTREE_ROOT>/runs/<run-id>/report.md`, or
-- `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when `AEO_WORKTREE_ROOT` is unset.
+- `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when `AEO_WORKTREE_ROOT` is unset. The Cursor bridge uses the same directory.
 
 The bridge announces the file path in the tool result as `Full report: <path>`. Run reports are not auto-cleaned by the bridge.
 

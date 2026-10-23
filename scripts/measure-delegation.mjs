@@ -29,7 +29,7 @@ const USAGE_TEXT = [
 ].join("\n");
 
 export const TABLE_HEADER_LINES = [
-    "| Task | Team Lead tokens | Engineer tokens | Total cost with delegation | Estimated cost without delegation |",
+    "| Task | Team Lead tokens | Engineer tokens | Cost with delegation | Cost without delegation |",
     "| --- | --- | --- | --- | --- |"
 ];
 

@@ -1,6 +1,18 @@
 # Context hijyeni analizi ve ölçüm (benchmark) planı
 
-Tarih: 2026-10-21. Durum: öneri, uygulanmadı.
+Tarih: 2026-10-21. Durum: bölüm 3 büyük ölçüde uygulandı (v1.4.0), bölüm 4 uygulanmadı. Güncelleme: 2026-10-23.
+
+## Uygulama durumu (2026-10-23)
+
+| Öneri | Durum | Nerede |
+| --- | --- | --- |
+| A. Rapor tavanını düşür ve dosyaya al | Uygulandı, v1.4.0 | Her iki bridge'de `AEO_MAX_REPORT_CHARS`, varsayılan 32k; tam rapor `runs/<id>/report.md`. Bkz. [context-hygiene.md](../context-hygiene.md). |
+| B. Compact talimatı | Kısmen | Preset kuralında "beş madde" kuralı var. `# Compact instructions` bloğu dokümanda örnek olarak veriliyor, installer `CLAUDE.md`'ye yazmıyor; kullanıcı elle ekler. Codex tarafında karşılığı yeni session kuralı. |
+| C. Görev sınırında `/clear` | Uygulandı | Claude ve Codex preset kurallarının "Context hygiene" bölümü. |
+| D. Test çıktısı filtresi | Uygulandı, opsiyonel | `presets/claude/hooks/filter-test-output.example.mjs`; installer kurmaz. |
+| Bölüm 4 benchmark planı (K0/K1/K2, 5 görev, 3 tekrar) | Uygulanmadı | README'deki ölçüm tek görev, iki koşul, tek tekrardır; bu planın yerine geçmez. |
+
+Aşağıdaki metin 21 Ekim'deki haliyle bırakıldı; sayılar o günkü v1.3.0 kodunu anlatır.
 
 Bu doküman iki soruyu yanıtlar:
 
@@ -40,7 +52,7 @@ Team Lead context'ine giren şeyler şunlar, ve sızıntı burada:
 
 | Kaynak | Boyut | Not |
 | --- | --- | --- |
-| Delegasyon raporu (`agent_success` metni) | `MAX_REPORT_CHARS = 120_000` karakter, yaklaşık 30k token üst sınır | `bridge/antigravity-mcp/lib/delegate.js:26`. Mühendis uzun yazarsa her delegasyon 30k token yer; 3 revizyon 90k. |
+| Delegasyon raporu (`agent_success` metni) | v1.3.0'da `MAX_REPORT_CHARS = 120_000` karakter, yaklaşık 30k token üst sınır (v1.4.0'dan beri varsayılan 32k, ayarlanabilir) | `bridge/antigravity-mcp/lib/delegate.js`. Mühendis uzun yazarsa her delegasyon 30k token yer; 3 revizyon 90k. |
 | CLI diagnostics bloğu | Aynı 120k sınır | Stderr; izin uyarıları, model fallback notları. |
 | Kontrat (prompt) | 24k karakter üst sınır | Team Lead'in kendi çıktısı, context'te kalır. |
 | Diff okuma, `git status`, test çıktısı | Sınırsız | Team Lead'in doğrulama adımı. `npm test` çıktısı tek başına 10-20k token olabilir. |
@@ -91,7 +103,7 @@ Maliyete çevirme: kullanıcının kendi fiyat tablosu (`cost-aware-routing.md`'
 ### Koşullar
 
 - **K0:** Düz Claude Code, AEO kurulu değil. Aynı prompt.
-- **K1:** AEO mevcut sürüm (v1.3.0).
+- **K1:** AEO v1.3.0 (bölüm 3 değişiklikleri öncesi; bugün bu koşul için v1.3.0 etiketi kurulmalı).
 - **K2:** AEO + bölüm 3'teki A-D değişiklikleri.
 
 K0 ile K1 farkı "AEO'nun faydası", K1 ile K2 farkı "context hijyeninin faydası". İkisini ayrı ayrı raporlamak gerekir; birleştirilirse hangi değişikliğin işe yaradığı görülmez.
