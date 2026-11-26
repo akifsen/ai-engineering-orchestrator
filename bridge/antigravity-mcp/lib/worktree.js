@@ -806,7 +806,7 @@ export async function applyPatch({
             }
 
             const checkRes = await runGit(
-                ["apply", "--check", "--binary", "--whitespace=nowarn", "--", patchPath],
+                ["apply", "--check", "--binary", "--exclude=.aeo/memory/*", "--whitespace=nowarn", "--", patchPath],
                 { cwd: resolvedRepoRoot, spawnImpl }
             );
 
@@ -827,7 +827,7 @@ export async function applyPatch({
             }
 
             const applyRes = await runGit(
-                ["apply", "--binary", "--whitespace=nowarn", "--", patchPath],
+                ["apply", "--binary", "--exclude=.aeo/memory/*", "--whitespace=nowarn", "--", patchPath],
                 { cwd: resolvedRepoRoot, spawnImpl }
             );
 

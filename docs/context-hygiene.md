@@ -77,6 +77,10 @@ The hook changes only what the model sees in its context. Full test output remai
 
 AEO ships no hook for Codex. The same policy rules apply: run targeted test commands, use quiet flags, and start a new session at task boundaries.
 
+## Project memory
+
+To carry a project summary across sessions instead of rediscovering the repository, see [project memory](project-memory.md).
+
 ## What this does not do
 
 Context hygiene prevents context inflation and baseline loss. It does not make a measured savings guarantee. Actual token and cost impacts depend on project size, test output verbosity, and provider pricing. See [cost-aware routing](cost-aware-routing.md).

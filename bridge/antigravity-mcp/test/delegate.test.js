@@ -2765,3 +2765,83 @@ test("delegate worktree agent_success with no changes calls removeWorktree and s
         await rm(directory, { recursive: true, force: true });
     }
 });
+
+test("AEO_MEMORY=on writes a ledger record and appends a final Ledger line", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const directory = await tempDirectory();
+    const envelope = {
+        conversation_id: "conv-ledger",
+        status: "SUCCESS",
+        response: "Implemented the ledger.",
+        duration_seconds: 1,
+        num_turns: 2
+    };
+    const { spawnImpl } = mockSpawn({ stdout: JSON.stringify(envelope) });
+
+    try {
+        execFileSync("git", ["init", "-q"], { cwd: directory });
+        const result = await delegateToAntigravity(
+            { prompt: "Add a ledger.", cwd: directory },
+            { spawnImpl, env: { ...process.env, AEO_MEMORY: "on" } }
+        );
+        assert.equal(result.outcome, "agent_success");
+        assert.equal(result.isError, false);
+        const lines = result.text.split("\n");
+        const last = lines.at(-1);
+        assert.match(last, /^Ledger: \.aeo\/memory\/tasks\/.+-delegation-r[0-9a-f]{8}-[0-9a-f]{4}\.md$/);
+        assert.equal(lines.filter((l) => l.startsWith("Ledger: ")).length, 1);
+        const record = await readFile(path.join(directory, last.slice("Ledger: ".length)), "utf8");
+        assert.match(record, /^---\nschema: 1\nkind: delegation\n/);
+        assert.match(record, /Implemented the ledger\./);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("in-place delegation records the pre-run git status baseline without ledger paths", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const directory = await tempDirectory();
+    const envelope = { conversation_id: "conv-baseline", status: "SUCCESS", response: "Done.", duration_seconds: 1, num_turns: 1 };
+    const { spawnImpl } = mockSpawn({ stdout: JSON.stringify(envelope) });
+
+    try {
+        execFileSync("git", ["init", "-q"], { cwd: directory });
+        await writeFile(path.join(directory, "user-draft.txt"), "pre-existing user work\n", "utf8");
+        const env = { ...process.env, AEO_MEMORY: "on" };
+        const first = await delegateToAntigravity({ prompt: "Task one.", cwd: directory }, { spawnImpl, env });
+        const firstRecord = await readFile(path.join(directory, first.text.split("\n").at(-1).slice("Ledger: ".length)), "utf8");
+        assert.match(firstRecord, /baseline_lines: 1\n/);
+        assert.match(firstRecord, /\n## Baseline \(git status --short before the run\)\n\n```text\n\?\? user-draft\.txt\n```\n/);
+        assert.ok(firstRecord.indexOf("## Baseline") < firstRecord.indexOf("## Contract"));
+
+        // The first run created .aeo/memory/; it must not show up in the next baseline.
+        const second = await delegateToAntigravity({ prompt: "Task two.", cwd: directory }, { spawnImpl, env });
+        const secondRecord = await readFile(path.join(directory, second.text.split("\n").at(-1).slice("Ledger: ".length)), "utf8");
+        assert.match(secondRecord, /baseline_lines: 1\n/);
+        assert.doesNotMatch(secondRecord, /\.aeo\/memory\/[^\n]*\n```/);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("no git status call for the baseline when the ledger is off", async () => {
+    const directory = await tempDirectory();
+    const envelope = { conversation_id: "conv-off", status: "SUCCESS", response: "Done.", duration_seconds: 1, num_turns: 1 };
+    const { spawnImpl } = mockSpawn({ stdout: JSON.stringify(envelope) });
+    const gitCalls = [];
+    const gitSpawnImpl = (cmd, args, opts) => {
+        gitCalls.push(args);
+        throw new Error("git must not be called");
+    };
+    try {
+        const result = await delegateToAntigravity(
+            { prompt: "Task.", cwd: directory },
+            { spawnImpl, gitSpawnImpl, env: { ...process.env, AEO_MEMORY: "off" } }
+        );
+        assert.equal(result.outcome, "agent_success");
+        assert.equal(gitCalls.length, 0);
+        assert.doesNotMatch(result.text, /^Ledger: /m);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});

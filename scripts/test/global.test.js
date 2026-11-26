@@ -642,7 +642,7 @@ test("case o: replace install, then plain install without flag: file bytes uncha
             const cliAgentsText = await readFile(path.join(cliHome, ".codex", "AGENTS.md"), "utf8");
             assert.equal(cliAgentsText.includes(AGENTS_BEGIN), false);
             const lineCount = cliAgentsText.split(/\r?\n/).length;
-            assert.ok(lineCount < 300, `Expected single policy (~250 lines), but got ${lineCount} lines`);
+            assert.ok(lineCount < 450, `Expected a single policy copy (~310 lines; a duplicate would exceed 600), but got ${lineCount} lines`);
         } finally {
             await rm(cliHome, { recursive: true, force: true });
         }

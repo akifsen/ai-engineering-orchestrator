@@ -52,8 +52,10 @@ const BRIDGE_FILES = [
     "package.json",
     "package-lock.json",
     "index.js",
+    "memory.js",
     "README.md",
     "lib/delegate.js",
+    "lib/ledger.js",
     "lib/server.js",
     "lib/worktree.js"
 ];

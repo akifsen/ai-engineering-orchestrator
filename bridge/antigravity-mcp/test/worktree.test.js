@@ -1223,6 +1223,7 @@ test("applyPatch: check-then-apply order with exact args and cwd=repoRoot, no --
             "apply",
             "--check",
             "--binary",
+            "--exclude=.aeo/memory/*",
             "--whitespace=nowarn",
             "--",
             patchPath
@@ -1233,6 +1234,7 @@ test("applyPatch: check-then-apply order with exact args and cwd=repoRoot, no --
         assert.deepEqual(calls[1].args.slice(2), [
             "apply",
             "--binary",
+            "--exclude=.aeo/memory/*",
             "--whitespace=nowarn",
             "--",
             patchPath
@@ -1275,6 +1277,7 @@ test("applyPatch: --check failure returns apply_conflict and no second apply cal
             "apply",
             "--check",
             "--binary",
+            "--exclude=.aeo/memory/*",
             "--whitespace=nowarn",
             "--",
             patchPath

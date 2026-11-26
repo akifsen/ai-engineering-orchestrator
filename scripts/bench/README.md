@@ -6,7 +6,7 @@ Implements section 4 of docs/proposals/context-hygiene-analysis.tr.md to measure
 
 ## Target repository
 
-The benchmark runs against a pinned commit of `C:\Users\akifsen\devel_ext\gamearea` (a user-chosen local checkout; any pinned git repository works). Five evaluation tasks are executed against this pinned state:
+The benchmark runs against pinned commits of a user-chosen local checkout; any pinned git repository works. The first series (October 2026) uses clones of the `kimlik` Laravel project under `C:\bench\kimlik-k0` and `C:\bench\kimlik-k2`, one clone per condition so the K2 project-scoped AEO install never leaks into K0. Keep the clones outside the home directory: Claude Code loads `.claude/rules` from every ancestor of the cwd, so a clone under `C:\Users\<you>` inherits the user-scope AEO rule as a project rule. Each task pins its own base commit (the parent of the historical fix it was derived from). Five evaluation tasks are executed against those pinned states:
 - T1: Behavioral bug fix (a historical commit is reverted, symptoms described to the agent, and that commit's tests serve as hidden acceptance tests).
 - T2: Small feature (new configuration parameter and associated test).
 - T3: Multi-file refactor (internal structure updated, external behavior fixed, existing tests unchanged).
@@ -31,7 +31,7 @@ Verify cell readiness before every run using `preflight.mjs`:
 
 ```bash
 node scripts/bench/preflight.mjs \
-  --repo "C:/Users/akifsen/devel_ext/gamearea" \
+  --repo "C:/bench/kimlik-k2" \
   --commit 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b \
   --condition K1 \
   --config-dir ~/.claude-bench/K1
@@ -134,3 +134,41 @@ The script reports medians and ranges only (no arithmetic means). Numbers report
 - Engineer `model` field is null in bridge metadata when delegations do not provide an explicit model identifier (older installed bridges).
 - Cursor usage payloads use camelCase (`inputTokens`, `outputTokens`, `cacheReadTokens`).
 - The transcript collector deduplicates assistant entries by message identifier.
+
+## Re-scan analysis
+
+Offline, zero-cost analysis of how much each Claude Code session re-discovers the project, using transcripts already on disk (no network, no LLM calls):
+
+```
+node scripts/bench/analyze-rescans.mjs <dir-or-file> [<file>...] [--project-root <abs path>]
+```
+
+A directory means every `*.jsonl` directly inside it (not recursive; subagent transcripts in subfolders are excluded). Sessions are ordered by earliest timestamp. Sidechain lines are skipped. Output is one JSON object:
+
+- `sessions[]`: `session`, `firstTimestamp`, `lastTimestamp`, `teamLead` tokens, `discovery` and `startupDiscovery` (`calls`, `byCategory`, `resultChars`, `approxTokens` = ceil(chars / 4)), `filesRead` (normalized, repo-relative with `--project-root`), `rereadRatio` (share of this session's files already read in earlier sessions; `null` for the first).
+- `crossSession`: `totalSessions`, `uniqueFilesRead`, `rereadFiles` (`{path, sessions}`, top 50), `rereadFilesTotal`, `overallRereadRatio`, `rereadChars`, `rereadApproxTokens`.
+
+Per session, additionally:
+
+- `filesReadVia`: `{ Read, shell }`, the number of file-read calls by source (the `Read` tool vs. shell commands).
+- `repeatReadsInSession`: read calls (Read or shell) on a file already read earlier in the same session; `repeatReadChars`: result characters of those repeat reads.
+
+Files read through Bash/PowerShell (`cat`, `type`, `head`, `tail`, `less`, `sed -n '<range>p' <file>`, `Get-Content`/`gc`) count as files read, with the same path normalization as `Read`. Shell-read parsing is best effort, not a full shell parser: flags and their values are skipped, text after the first `|`, `;`, `&&`, `||` or `>` is ignored, paths containing `*` or `$` are ignored, and relative paths resolve against `--project-root` when given. If one command reads several files, its result characters are attributed to the first file only.
+
+Startup discovery counts discovery calls before the first Edit/Write/NotebookEdit or delegate call.
+
+## Memory A/B (Phase 5)
+
+One small A/B for project memory: a chain of consecutive headless sessions on one repository, memory on vs off. The repository needs a project install of the current AEO checkout (for `.aeo/bridge/antigravity-mcp/memory.js`), and the config dir must register the SessionStart hook; with `AEO_MEMORY=off` it prints nothing, so one config dir serves both arms:
+
+```json
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"node \"$CLAUDE_PROJECT_DIR/.aeo/bridge/antigravity-mcp/memory.js\" hook session-start"}]}]}}
+```
+
+```
+node scripts/bench/run-memory-ab.mjs run --repo <abs> --commit <sha> --config-dir <abs> --arm on|off --run <n> \
+  --sessions <json array of prompts> --out <abs dir> [--max-budget-usd 5] [--dry-run] [--force]
+node scripts/bench/run-memory-ab.mjs compare --out <dir> [--noise-pct 15] [--json]
+```
+
+`run` resets the repository to the commit, removes `.aeo/memory`, runs `memory.js init` for arm `on`, then runs one session per prompt without resetting in between, and writes `mem-<arm>-<run>.json` (per-session Team Lead tokens, discovery calls, cost, INDEX size, hook injections). `compare` prints per-arm means and the sessions 2+3 difference, then the stop rule: with one run per arm, a difference below the noise threshold means the second repetition is skipped.

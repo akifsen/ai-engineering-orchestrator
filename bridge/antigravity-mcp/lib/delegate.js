@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { changedMemoryNames, filterBaseline, fingerprintMemory, memoryWillWrite, resolveMemoryMode, summarizePatch, writeDelegationRecord, writeEventRecord } from "./ledger.js";
+import { readFile as readPatchFile } from "node:fs/promises";
 import {
     applyPatch,
     buildPatch,
@@ -14,6 +16,7 @@ import {
     resolveRepoRoot,
     resolveWorktreeRoot,
     resolveWorktreeTtlMs,
+    runGit,
     sweepStaleDelegations,
     touchDelegation
 } from "./worktree.js";
@@ -283,13 +286,31 @@ export async function persistEngineerReport({
 
         await mkdirImpl(path.dirname(reportPath), { recursive: true });
         await writeFileImpl(reportPath, response, "utf8");
-        return { ok: true, path: path.resolve(reportPath) };
+        return { ok: true, path: path.resolve(reportPath), runId };
     } catch (error) {
         return {
             ok: false,
             error: error instanceof Error ? error.message : String(error)
         };
     }
+}
+
+// Non-enumerable side channel carrying data for the project ledger; it never
+// changes the shape of the result as seen by callers or deep-equal checks.
+function attachLedgerInfo(result, saveResult, response, payload) {
+    Object.defineProperty(result, "ledgerInfo", {
+        value: {
+            runId: saveResult?.ok ? saveResult.runId : undefined,
+            reportPath: saveResult?.ok ? saveResult.path : undefined,
+            response,
+            durationSeconds: payload?.duration_seconds,
+            turns: payload?.num_turns
+        },
+        enumerable: false,
+        configurable: true,
+        writable: true
+    });
+    return result;
 }
 
 function buildFullReportToolLines(saveResult, truncated, maxReportChars) {
@@ -342,6 +363,7 @@ export function buildImplementationPrompt(prompt) {
         "- Never claim a command ran unless it ran.",
         "- Do not commit, push, reset, rebase, merge, switch branches, or rewrite Git history.",
         "- Do not modify files outside the working directory.",
+        "- Do not create, modify, or delete anything under .aeo/memory; the bridge and the Team Lead own it.",
         "- Report unresolved risks.",
         "",
         "Completion report:",
@@ -1009,9 +1031,10 @@ export function runAntigravity({
                         ? payload.response.trim()
                         : "";
                     let fullReportLines = [];
+                    let failureSaveResult = null;
                     if (failureResponse) {
                         const truncated = failureResponse.length > maxReportChars;
-                        const saveResult = await persistEngineerReport({
+                        const saveResult = failureSaveResult = await persistEngineerReport({
                             response: failureResponse,
                             env,
                             mkdirImpl,
@@ -1022,7 +1045,7 @@ export function runAntigravity({
                         fullReportLines = buildFullReportToolLines(saveResult, truncated, maxReportChars);
                     }
 
-                    finish(outcome({
+                    finish(attachLedgerInfo(outcome({
                         outcomeName: "agent_failure",
                         isError: true,
                         text: [
@@ -1039,7 +1062,7 @@ export function runAntigravity({
                             "Execution metadata:",
                             formatMetadata(payload, model)
                         ].filter(Boolean).join("\n")
-                    }));
+                    }), failureSaveResult, failureResponse, payload));
                     return;
                 }
 
@@ -1101,7 +1124,7 @@ export function runAntigravity({
                 });
                 const fullReportLines = buildFullReportToolLines(saveResult, truncated, maxReportChars);
 
-                finish(outcome({
+                finish(attachLedgerInfo(outcome({
                     outcomeName: "agent_success",
                     isError: false,
                     text: [
@@ -1118,7 +1141,7 @@ export function runAntigravity({
                             ? diagnosticBlock("CLI diagnostics", diagnostics, maxReportChars).trim()
                             : ""
                     ].filter(Boolean).join("\n")
-                }));
+                }), saveResult, response, payload));
             } catch (error) {
                 finish(cliFailure([
                     `Antigravity bridge internal error: ${errorText(error)}`
@@ -1255,6 +1278,147 @@ export async function runWithModelFallback({
     return lastResult;
 }
 
+// Fingerprints .aeo/memory control files around an in-place run. Best-effort.
+async function beginIntegrityGuard({ dependencies, cwd }) {
+    try {
+        const env = dependencies.env ?? process.env;
+        if (resolveMemoryMode(env) === "off") {
+            return null;
+        }
+        const rootRes = await resolveRepoRoot(cwd, { spawnImpl: dependencies.gitSpawnImpl ?? spawn });
+        if (!rootRes?.ok) {
+            return null;
+        }
+        return { repoRoot: rootRes.repoRoot, before: await fingerprintMemory(rootRes.repoRoot) };
+    } catch {
+        return null;
+    }
+}
+
+async function finishIntegrityGuard(guard) {
+    try {
+        if (!guard?.before) {
+            return null;
+        }
+        const names = changedMemoryNames(guard.before, await fingerprintMemory(guard.repoRoot));
+        return names.length
+            ? `Ledger integrity: .aeo/memory changed during the run (${names.join(", ")})`
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+const EVENT_OUTCOMES = new Set(["applied", "no_changes", "apply_conflict", "apply_error", "discarded", "discard_error"]);
+
+async function withEventLedger(result, input, dependencies, sink) {
+    try {
+        if (!sink.repoRoot || !EVENT_OUTCOMES.has(result.outcome)) {
+            return result;
+        }
+        const env = dependencies.env ?? process.env;
+        if (resolveMemoryMode(env) === "off") {
+            return result;
+        }
+        const written = await writeEventRecord({
+            repoRoot: sink.repoRoot,
+            worktreeRoots: [resolveWorktreeRoot(env)],
+            env,
+            record: {
+                engineer: "antigravity",
+                outcome: result.outcome,
+                delegationId: input?.delegationId,
+                baseCommit: sink.baseCommit,
+                diffstat: sink.diffstat
+            }
+        });
+        if (written.written) {
+            result.text = `${result.text}\nLedger: ${written.relativePath}`;
+        }
+    } catch {
+        // ledger is best-effort
+    }
+    return result;
+}
+
+async function readPatchSummary(patchPath) {
+    try {
+        return summarizePatch(await readPatchFile(patchPath, "utf8"));
+    } catch {
+        return "";
+    }
+}
+
+// Main-tree `git status --short` before the engineer runs, for the ledger record.
+// Runs git only when a record would be written. Best-effort: undefined on failure.
+async function captureBaseline(repoRoot, dependencies) {
+    try {
+        const env = dependencies.env ?? process.env;
+        if (!repoRoot || !(await memoryWillWrite(repoRoot, env))) {
+            return undefined;
+        }
+        const res = await runGit(["status", "--short", "--untracked-files=all"], {
+            cwd: repoRoot,
+            spawnImpl: dependencies.gitSpawnImpl ?? spawn
+        });
+        if (res?.code !== 0 || typeof res.stdout !== "string") {
+            return undefined;
+        }
+        return filterBaseline(res.stdout);
+    } catch {
+        return undefined;
+    }
+}
+
+// Best-effort: returns the "Ledger: ..." line to append, or null. Never throws.
+async function writeLedgerLine({ result, prompt, model, isolation, isRevision, delegationContext, diffstat, dependencies, cwd, repoRootHint, baseline }) {
+    try {
+        const env = dependencies.env ?? process.env;
+        if (resolveMemoryMode(env) === "off") {
+            return null;
+        }
+        let repoRoot = delegationContext?.repoRoot ?? repoRootHint;
+        if (!repoRoot) {
+            const rootRes = await resolveRepoRoot(cwd, { spawnImpl: dependencies.gitSpawnImpl ?? spawn });
+            if (!rootRes?.ok) {
+                return null;
+            }
+            repoRoot = rootRes.repoRoot;
+        }
+        const info = result.ledgerInfo ?? {};
+        const attempts = Array.isArray(result.attempts)
+            ? result.attempts.map((a) => `${a.model ?? "default"}:${a.outcome}`)
+            : undefined;
+        const written = await writeDelegationRecord({
+            repoRoot,
+            worktreeRoot: delegationContext?.worktreePath,
+            worktreeRoots: [resolveWorktreeRoot(env)],
+            env,
+            record: {
+                engineer: "antigravity",
+                outcome: result.outcome,
+                model: result.modelUsed ?? model,
+                attempts,
+                isolation,
+                delegationId: delegationContext?.delegationId,
+                revision: isRevision,
+                runId: info.runId,
+                reportPath: info.reportPath,
+                baseCommit: delegationContext?.baseCommit,
+                durationSeconds: info.durationSeconds,
+                turns: info.turns,
+                contract: prompt,
+                response: info.response,
+                diffstat,
+                baseline
+            }
+        });
+        return written.written ? `Ledger: ${written.relativePath}` : null;
+    } catch {
+        return null;
+    }
+}
+
 export async function delegateToAntigravity(input, dependencies = {}) {
     try {
         const prompt = normalizePrompt(input?.prompt);
@@ -1274,7 +1438,9 @@ export async function delegateToAntigravity(input, dependencies = {}) {
         const maxReportChars = dependencies.maxReportChars ?? reportChars.limit;
 
         if (isolation === "none") {
-            return await runWithModelFallback({
+            const guard = await beginIntegrityGuard({ dependencies, cwd });
+            const baseline = await captureBaseline(guard?.repoRoot, dependencies);
+            const inPlaceResult = await runWithModelFallback({
                 cliTimeout,
                 hardTimeoutMs,
                 terminateGraceMs,
@@ -1286,6 +1452,27 @@ export async function delegateToAntigravity(input, dependencies = {}) {
                 effort,
                 bin
             });
+            const integrityLine = await finishIntegrityGuard(guard);
+            if (integrityLine) {
+                inPlaceResult.text = `${inPlaceResult.text}\n${integrityLine}`;
+            }
+            const ledgerLine = await writeLedgerLine({
+                result: inPlaceResult,
+                prompt,
+                model,
+                isolation,
+                isRevision: false,
+                delegationContext: null,
+                repoRootHint: guard?.repoRoot,
+                diffstat: undefined,
+                dependencies,
+                cwd,
+                baseline
+            });
+            if (ledgerLine) {
+                inPlaceResult.text = `${inPlaceResult.text}\n${ledgerLine}`;
+            }
+            return inPlaceResult;
         }
 
         const gitSpawnImpl = dependencies.gitSpawnImpl ?? spawn;
@@ -1410,6 +1597,8 @@ export async function delegateToAntigravity(input, dependencies = {}) {
             };
         }
 
+        const isolatedBaseline = await captureBaseline(delegationContext?.repoRoot, dependencies);
+
         try {
             const agyResult = await runWithModelFallback({
                 cliTimeout,
@@ -1516,7 +1705,22 @@ export async function delegateToAntigravity(input, dependencies = {}) {
             }
 
             const isError = !patchRes.ok ? true : agyResult.isError;
-            const text = `${agyResult.text}\n\n${isolationLines.join("\n")}`;
+            let text = `${agyResult.text}\n\n${isolationLines.join("\n")}`;
+            const ledgerLine = await writeLedgerLine({
+                result: agyResult,
+                prompt,
+                model,
+                isolation,
+                isRevision,
+                delegationContext,
+                diffstat: patchRes.ok && patchRes.hasChanges ? patchRes.diffstat : undefined,
+                dependencies,
+                cwd,
+                baseline: isolatedBaseline
+            });
+            if (ledgerLine) {
+                text = `${text}\n${ledgerLine}`;
+            }
 
             return {
                 outcome: agyResult.outcome,
@@ -1553,6 +1757,12 @@ export async function delegateToAntigravity(input, dependencies = {}) {
 }
 
 export async function applyDelegation(input, dependencies = {}) {
+    const sink = {};
+    const result = await applyDelegationInner(input, dependencies, sink);
+    return withEventLedger(result, input, dependencies, sink);
+}
+
+async function applyDelegationInner(input, dependencies = {}, sink = {}) {
     try {
         const delegationId = input?.delegationId;
         if (!isValidDelegationId(delegationId)) {
@@ -1609,6 +1819,8 @@ export async function applyDelegation(input, dependencies = {}) {
             });
         }
 
+        sink.repoRoot = loadRes.repoRoot;
+        sink.baseCommit = loadRes.baseCommit;
         const busyKey = makeBusyKey(loadRes.repoRoot, delegationId);
         if (busyDelegations.has(busyKey)) {
             return outcome({
@@ -1684,6 +1896,7 @@ export async function applyDelegation(input, dependencies = {}) {
             });
         }
 
+        sink.diffstat = await readPatchSummary(loadRes.patchPath);
         const appliedLines = [
             "Outcome: applied",
             `Delegation ${delegationId} applied successfully.`,
@@ -1728,6 +1941,12 @@ export async function applyDelegation(input, dependencies = {}) {
 }
 
 export async function discardDelegation(input, dependencies = {}) {
+    const sink = {};
+    const result = await discardDelegationInner(input, dependencies, sink);
+    return withEventLedger(result, input, dependencies, sink);
+}
+
+async function discardDelegationInner(input, dependencies = {}, sink = {}) {
     try {
         const delegationId = input?.delegationId;
         if (!isValidDelegationId(delegationId)) {
@@ -1807,6 +2026,8 @@ export async function discardDelegation(input, dependencies = {}) {
             });
         }
 
+        sink.repoRoot = repoRoot;
+        sink.baseCommit = loadRes.ok ? loadRes.baseCommit : undefined;
         const busyKey = makeBusyKey(repoRoot, delegationId);
         if (busyDelegations.has(busyKey)) {
             return outcome({

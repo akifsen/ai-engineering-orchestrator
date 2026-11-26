@@ -23,6 +23,23 @@ function normalizeNewlines(text) {
     return text.replace(/\r\n/g, "\n");
 }
 
+test("cursor ledger.js matches antigravity ledger.js when sibling exists", async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const agyLedger = path.resolve(here, "..", "..", "antigravity-mcp", "lib", "ledger.js");
+    const cursorLedger = path.resolve(here, "..", "lib", "ledger.js");
+    let agyContent;
+    try {
+        agyContent = await readFile(agyLedger, "utf8");
+    } catch (error) {
+        if (error && typeof error === "object" && error.code === "ENOENT") {
+            return;
+        }
+        throw error;
+    }
+    const cursorContent = await readFile(cursorLedger, "utf8");
+    assert.equal(normalizeNewlines(cursorContent), normalizeNewlines(agyContent));
+});
+
 test("cursor worktree.js matches antigravity worktree.js when sibling exists", async () => {
     let agyContent;
     try {
