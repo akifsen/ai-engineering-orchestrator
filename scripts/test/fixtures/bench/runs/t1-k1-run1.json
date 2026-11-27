@@ -1,0 +1,28 @@
+{
+  "task": "T1",
+  "condition": "K1",
+  "run": 1,
+  "date": "2026-10-23",
+  "teamLeadModel": "claude-fable-5-1",
+  "teamLead": {
+    "input_tokens": 800,
+    "output_tokens": 150,
+    "cache_creation_input_tokens": 40,
+    "cache_read_input_tokens": 100
+  },
+  "engineer": {
+    "tokens": 5000,
+    "models": [
+      "gemini-3.8-flash-high"
+    ]
+  },
+  "delegationCount": 1,
+  "compactions": 0,
+  "wallClockSeconds": 25.0,
+  "acceptance": "pass",
+  "revisions": 0,
+  "dirtyFileViolation": false,
+  "policyViolation": false,
+  "quotaFallback": false,
+  "notes": "run 1 with delegation"
+}

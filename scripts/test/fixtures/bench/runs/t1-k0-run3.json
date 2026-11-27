@@ -1,0 +1,26 @@
+{
+  "task": "T1",
+  "condition": "K0",
+  "run": 3,
+  "date": "2026-10-23",
+  "teamLeadModel": "claude-fable-5-1",
+  "teamLead": {
+    "input_tokens": 1400,
+    "output_tokens": 300,
+    "cache_creation_input_tokens": 70,
+    "cache_read_input_tokens": 30
+  },
+  "engineer": {
+    "tokens": null,
+    "models": []
+  },
+  "delegationCount": 0,
+  "compactions": 2,
+  "wallClockSeconds": 40.0,
+  "acceptance": "fail",
+  "revisions": 1,
+  "dirtyFileViolation": true,
+  "policyViolation": true,
+  "quotaFallback": false,
+  "notes": "run 3 with policy violation"
+}

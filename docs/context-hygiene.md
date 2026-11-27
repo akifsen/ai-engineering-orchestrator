@@ -4,11 +4,11 @@ The Team Lead runs on the expensive model. Its context window is the primary cos
 
 ## What the bridge does
 
-The Antigravity bridge caps the inline engineer report returned to the Team Lead model to `AEO_MAX_REPORT_CHARS` (default 32000 characters).
+Both bridges, Antigravity and Cursor, cap the inline engineer report returned to the Team Lead model to `AEO_MAX_REPORT_CHARS` (default 32000 characters).
 
 The full un-truncated engineer report is written to disk at:
 - `<AEO_WORKTREE_ROOT>/runs/<run-id>/report.md`, or
-- `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when `AEO_WORKTREE_ROOT` is unset.
+- `<os tmpdir>/aeo-antigravity/runs/<run-id>/report.md` when `AEO_WORKTREE_ROOT` is unset. The Cursor bridge uses the same directory.
 
 The bridge announces the file path in the tool result as `Full report: <path>`. Run reports are not auto-cleaned by the bridge.
 
@@ -76,6 +76,10 @@ The hook changes only what the model sees in its context. Full test output remai
 ## Codex
 
 AEO ships no hook for Codex. The same policy rules apply: run targeted test commands, use quiet flags, and start a new session at task boundaries.
+
+## Project memory
+
+To carry a project summary across sessions instead of rediscovering the repository, see [project memory](project-memory.md).
 
 ## What this does not do
 

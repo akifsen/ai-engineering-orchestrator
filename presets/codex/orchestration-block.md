@@ -231,6 +231,16 @@ Do not paste full test output into the context. Run the narrowest relevant test 
 
 Contracts stay small (the bridge limit is 24000 characters). Do not paste repository files into a contract.
 
+## Project memory
+
+When `<repo>/.aeo/memory/` exists, read `INDEX.md` before repository discovery and scan only what it does not cover. Read `docs.md` before consulting library documentation and use the source it names for the installed version; after resolving a new or changed source, record it with `memory.js docs set`. If the session started with an injected AEO project memory block, use it instead of reading INDEX.md again; after compaction, the block's Open task section restores the baseline and contract of the newest open delegation. When the injected block lists stale INDEX sections, rescan only the listed files; after updating a hand-written INDEX section, run `memory.js verify --section <heading>` (add `--paths` to scope it).
+
+Put the relevant `INDEX.md` and `docs.md` lines into the contract instead of letting the engineer rediscover them.
+
+The bridge writes `tasks/` records and appends a `Ledger:` line to its result. Never hand-edit `tasks/`. After each final APPROVED or CHANGES REQUIRED decision, record it with `node <bridge dir>/memory.js decide --task <slug> --decision <APPROVED|CHANGES_REQUIRED> --delegations <ids> --summary "<line>"`, where `<bridge dir>` is `.aeo/bridge/antigravity-mcp` (project install) or `~/.aeo/bridge/antigravity-mcp` (global install).
+
+Update the hand-written `INDEX.md` sections when the task changed what they describe. When a section is empty or unverified and this session's discovery already covered it, fill it with at most five short lines (paths, entry points, commands; no secrets, no copied code) and run `memory.js verify --section <heading> --paths <paths>`; do not scan extra files just to fill it. Ledger files are neither user work nor engineer work for baseline attribution. See `docs/project-memory.md`.
+
 ## aeo_reviewer
 
 Use aeo_reviewer for an independent challenge on non-trivial, security-sensitive, concurrent, persistent, or high-blast-radius work. Skip it when it would not change your decision.

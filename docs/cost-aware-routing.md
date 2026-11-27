@@ -71,11 +71,11 @@ Routing is not an escalation ladder from a lower-effort agent up to an expensive
 
 ## How to measure your own savings
 
-Use `scripts/measure-delegation.mjs` to print a markdown table row in the format used by the README measured-example table.
+Use `scripts/measure-delegation.mjs` to print a markdown table row with the five columns of the README measured-example table. Record the same things for both arms: token breakdown including cache reads and writes, API time, and wall-clock time. The README's own pair recorded the control arm's dollars and API time but not its tokens or either arm's wall-clock duration, which is why several of its cells are qualified.
 
 Collect these yourself:
 
-- Team Lead tokens from your provider's usage view. The bridge does not capture Team Lead tokens.
+- Team Lead tokens from your provider's usage view (in Claude Code, the `/cost` command). The bridge does not capture Team Lead tokens.
 - Engineer tokens from an `agy` JSON envelope or from the bridge metadata JSON block. Both carry a `usage` object. The `agy` usage schema is not documented in this repository.
 - Your own per-token rates (USD per 1M tokens) for the Team Lead and the engineer.
 - Your own estimate of Team Lead tokens had that model typed the change without delegation (`--without-delegation-tokens`).
@@ -94,7 +94,7 @@ The measurement script exists to help answer two open questions, not to close th
 
 A review and revision loop can consume more Team Lead tokens than direct implementation would have. Delegation round-trips add latency: the bridge waits up to the configured timeout per call. Whether the split still saves money on a given task depends on those costs as well as the token rates you pass in.
 
-One measured pair so far, the README's [measured example](../README.md#measured-example), gives a first partial answer to both. On that task the review pass did not erase the saving: Team Lead cost was 17 percent lower with delegation, and Team Lead API time 59 percent lower — the stronger effect on a usage-limited subscription. The latency question resolved against delegation: wall-clock time was about 30 percent longer. One run per arm; treat it as a data point, not a conclusion.
+One measured pair so far, the README's [measured example](../README.md#measured-example), gives a first partial answer to both. On that task the review pass did not erase the saving: Team Lead cost was 17 percent lower with delegation, and Team Lead API time 59 percent lower — the stronger effect on a usage-limited subscription. The latency question resolved against delegation: wall-clock time was longer, by roughly 30 percent on the author's observation rather than a recorded duration, and that run also included a quota retry onto a fallback model before the engineer started. One run per arm, with the engineer priced at $0 under a flat subscription; treat it as a data point, not a conclusion. The benchmark design that would turn it into one is in [the context-hygiene proposal](proposals/context-hygiene-analysis.tr.md#4-ölçüm-planı-aeo-varken--yokken) and has not been run.
 
 ## Personal example
 
