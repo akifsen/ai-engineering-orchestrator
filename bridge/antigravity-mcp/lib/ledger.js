@@ -6,6 +6,7 @@
 // Only `node:` imports are allowed; the caller passes repoRoot.
 
 import crypto from "node:crypto";
+import { realpathSync } from "node:fs";
 import { link, mkdir, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -94,8 +95,32 @@ function compactTimestamp(date) {
     );
 }
 
-function comparable(p) {
+function canonicalPath(p) {
     const resolved = path.resolve(p);
+    try {
+        return realpathSync.native(resolved);
+    } catch {
+        // path does not exist: canonicalize the nearest existing ancestor
+    }
+    const rest = [];
+    let current = resolved;
+    for (;;) {
+        const parent = path.dirname(current);
+        if (parent === current) {
+            return resolved;
+        }
+        rest.unshift(path.basename(current));
+        current = parent;
+        try {
+            return path.join(realpathSync.native(current), ...rest);
+        } catch {
+            // keep walking up
+        }
+    }
+}
+
+function comparable(p) {
+    const resolved = canonicalPath(p);
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 

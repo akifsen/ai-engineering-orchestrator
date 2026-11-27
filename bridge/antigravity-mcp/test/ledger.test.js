@@ -1,3 +1,4 @@
+import { symlinkSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -126,6 +127,41 @@ test("refuses to write when the memory dir is under the worktree root", async ()
         assert.equal(missing.written, false);
     } finally {
         await rm(repo, { recursive: true, force: true });
+    }
+});
+
+test("worktree guard canonicalizes symlinked worktree roots", async (t) => {
+    const base = await tempRepo();
+    try {
+        const repo = path.join(base, "real", "repo");
+        await mkdir(repo, { recursive: true });
+        const alias = path.join(base, "alias");
+        try {
+            symlinkSync(path.join(base, "real"), alias, process.platform === "win32" ? "junction" : "dir");
+        } catch {
+            t.skip("cannot create symlink");
+            return;
+        }
+        const env = { AEO_MEMORY: "on" };
+        const refused = await writeDelegationRecord({
+            repoRoot: repo,
+            worktreeRoots: [alias],
+            env,
+            record: baseRecord()
+        });
+        assert.equal(refused.written, false);
+
+        const sibling = path.join(base, "sibling");
+        await mkdir(sibling, { recursive: true });
+        const allowed = await writeDelegationRecord({
+            repoRoot: repo,
+            worktreeRoots: [sibling],
+            env,
+            record: baseRecord()
+        });
+        assert.equal(allowed.written, true);
+    } finally {
+        await rm(base, { recursive: true, force: true });
     }
 });
 
